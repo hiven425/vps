@@ -12,6 +12,9 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+WHITE='\033[1;37m'
 NC='\033[0m' # No Color
 
 # 错误处理函数
@@ -37,6 +40,49 @@ print_message() {
     local color=$1
     local message=$2
     echo -e "${color}${message}${NC}"
+}
+
+# 打印彩色消息（仅显示，不记录日志）
+print_colored() {
+    local color=$1
+    local message=$2
+    echo -e "${color}${message}${NC}"
+}
+
+# 获取系统信息
+get_system_info() {
+    local hostname=$(hostname)
+    local uptime=$(uptime -p 2>/dev/null || uptime | awk '{print $3,$4}')
+    local kernel=$(uname -r)
+    local os=$(lsb_release -d 2>/dev/null | cut -f2 || cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2 || echo "Unknown")
+    local ip=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || echo "Unknown")
+    local load_avg=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | sed 's/,//')
+    local memory_usage=$(free | awk 'NR==2{printf "%.1f", $3*100/$2}')
+    local disk_usage=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
+
+    echo "$hostname|$uptime|$kernel|$os|$ip|$load_avg|$memory_usage|$disk_usage"
+}
+
+# 绘制状态指示器
+draw_status_indicator() {
+    local status=$1
+    local service_name=$2
+    local width=${3:-20}
+
+    case $status in
+        "RUNNING"|"OK"|"ACTIVE")
+            printf "🟢 %-${width}s" "$service_name"
+            ;;
+        "WARNING"|"DEGRADED")
+            printf "🟡 %-${width}s" "$service_name"
+            ;;
+        "CRITICAL"|"STOPPED"|"ERROR")
+            printf "🔴 %-${width}s" "$service_name"
+            ;;
+        *)
+            printf "⚪ %-${width}s" "$service_name"
+            ;;
+    esac
 }
 
 # 记录日志
@@ -1913,6 +1959,187 @@ EOF
     fi
 }
 
+# 增强的fail2ban状态显示
+show_fail2ban_status_enhanced() {
+    print_message "$BLUE" "┌─────────────────────────────────────────────────────────────────────────────┐"
+    print_message "$BLUE" "│                           fail2ban 状态概览                                │"
+    print_message "$BLUE" "└─────────────────────────────────────────────────────────────────────────────┘"
+    echo
+
+    # 服务状态检查
+    local service_status="🔴 已停止"
+    local service_color="$RED"
+    local health_score=0
+
+    if systemctl is-active --quiet fail2ban; then
+        service_status="🟢 运行中"
+        service_color="$GREEN"
+        health_score=30
+    fi
+
+    # Socket状态检查
+    local socket_status="❌ 不可用"
+    if [[ -S "/var/run/fail2ban/fail2ban.sock" ]]; then
+        socket_status="✅ 正常"
+        ((health_score += 20))
+    fi
+
+    # 连接状态检查
+    local connection_status="❌ 无法连接"
+    local total_banned=0
+    local active_jails=0
+    local today_bans=0
+
+    if fail2ban-client status &>/dev/null; then
+        connection_status="✅ 连接正常"
+        ((health_score += 30))
+
+        # 获取统计信息
+        local jail_list=$(fail2ban-client status | grep "Jail list:" | cut -d: -f2 | tr ',' ' ')
+        if [[ -n "$jail_list" ]]; then
+            for jail in $jail_list; do
+                jail=$(echo $jail | xargs)
+                if [[ -n "$jail" ]]; then
+                    ((active_jails++))
+                    local banned_count=$(fail2ban-client status "$jail" 2>/dev/null | grep "Currently banned:" | awk '{print $3}' || echo "0")
+                    total_banned=$((total_banned + banned_count))
+                fi
+            done
+            ((health_score += 20))
+        fi
+
+        # 今日封禁统计
+        today_bans=$(grep "$(date '+%Y-%m-%d')" /var/log/fail2ban.log 2>/dev/null | grep "Ban" | wc -l)
+    fi
+
+    # 健康度评估
+    local health_indicator="🔴 异常"
+    local health_color="$RED"
+    if [[ $health_score -ge 80 ]]; then
+        health_indicator="🟢 健康"
+        health_color="$GREEN"
+    elif [[ $health_score -ge 50 ]]; then
+        health_indicator="🟡 警告"
+        health_color="$YELLOW"
+    fi
+
+    # 状态概览显示
+    print_message "$CYAN" "📊 服务状态概览"
+    echo "┌─────────────────────────────────────────────────────────────────────────────┐"
+    printf "│ 服务状态: %-20s │ Socket状态: %-20s │\n" "$service_status" "$socket_status"
+    printf "│ 连接状态: %-20s │ 健康度: %-25s │\n" "$connection_status" "$health_indicator ($health_score/100)"
+    echo "├─────────────────────────────────────────────────────────────────────────────┤"
+    printf "│ 活动Jail: %-8s │ 当前封禁IP: %-8s │ 今日封禁: %-8s │\n" "$active_jails" "$total_banned" "$today_bans"
+    echo "└─────────────────────────────────────────────────────────────────────────────┘"
+    echo
+
+    # 如果服务未运行，提供启动选项
+    if ! systemctl is-active --quiet fail2ban; then
+        print_message "$YELLOW" "⚠️  fail2ban服务未运行"
+        echo "服务状态详情:"
+        systemctl status fail2ban --no-pager -l | head -5
+        echo
+        if confirm_action "是否尝试启动fail2ban服务?"; then
+            print_message "$YELLOW" "正在启动fail2ban服务..."
+            if systemctl start fail2ban; then
+                print_message "$GREEN" "✅ 服务启动成功"
+                sleep 3
+                # 递归调用显示更新后的状态
+                show_fail2ban_status_enhanced
+                return
+            else
+                print_message "$RED" "❌ 服务启动失败"
+                print_message "$YELLOW" "错误日志:"
+                journalctl -u fail2ban --no-pager -n 5
+            fi
+        fi
+        return
+    fi
+
+    # 如果无法连接，等待socket
+    if ! fail2ban-client status &>/dev/null; then
+        print_message "$YELLOW" "⏳ 等待fail2ban服务完全启动..."
+        if [[ ! -S "/var/run/fail2ban/fail2ban.sock" ]]; then
+            wait_for_fail2ban_socket 30
+        fi
+        sleep 2
+    fi
+
+    # Jail状态详细显示
+    if fail2ban-client status &>/dev/null; then
+        print_message "$CYAN" "📋 Jail状态详情"
+        echo "┌─────────────────┬──────────┬──────────┬──────────┬─────────────────────┐"
+        echo "│ Jail名称        │ 状态     │ 封禁IP   │ 失败次数 │ 最后活动            │"
+        echo "├─────────────────┼──────────┼──────────┼──────────┼─────────────────────┤"
+
+        local jail_list=$(fail2ban-client status | grep "Jail list:" | cut -d: -f2 | tr ',' ' ')
+        if [[ -n "$jail_list" ]]; then
+            for jail in $jail_list; do
+                jail=$(echo $jail | xargs)
+                if [[ -n "$jail" ]]; then
+                    local jail_info=$(fail2ban-client status "$jail" 2>/dev/null)
+                    local banned_count=$(echo "$jail_info" | grep "Currently banned:" | awk '{print $3}' || echo "0")
+                    local failed_count=$(echo "$jail_info" | grep "Currently failed:" | awk '{print $3}' || echo "0")
+                    local status_icon="🟢"
+
+                    # 根据状态设置图标
+                    if [[ $banned_count -gt 0 ]]; then
+                        status_icon="🟡"
+                    fi
+                    if [[ $failed_count -gt 10 ]]; then
+                        status_icon="🔴"
+                    fi
+
+                    # 获取最后活动时间
+                    local last_activity=$(grep "$jail" /var/log/fail2ban.log 2>/dev/null | tail -1 | awk '{print $1, $2}' || echo "无记录")
+
+                    printf "│ %-15s │ %-8s │ %-8s │ %-8s │ %-19s │\n" \
+                        "$jail" "$status_icon 活动" "$banned_count" "$failed_count" "$last_activity"
+                fi
+            done
+        else
+            printf "│ %-73s │\n" "没有活动的jail"
+        fi
+        echo "└─────────────────┴──────────┴──────────┴──────────┴─────────────────────┘"
+        echo
+    fi
+
+    # 最近活动摘要
+    print_message "$CYAN" "📝 最近活动摘要 (最近5条)"
+    echo "┌─────────────────────────────────────────────────────────────────────────────┐"
+    if [[ -f "/var/log/fail2ban.log" ]]; then
+        local recent_activities=$(tail -5 /var/log/fail2ban.log 2>/dev/null | while read line; do
+            if echo "$line" | grep -q "Ban"; then
+                echo "🚫 $(echo $line | awk '{print $1, $2, $6, $7}')"
+            elif echo "$line" | grep -q "Unban"; then
+                echo "✅ $(echo $line | awk '{print $1, $2, $6, $7}')"
+            elif echo "$line" | grep -q "Found"; then
+                echo "⚠️  $(echo $line | awk '{print $1, $2, $6, $7, $8}')"
+            fi
+        done)
+
+        if [[ -n "$recent_activities" ]]; then
+            echo "$recent_activities" | while read activity; do
+                printf "│ %-75s │\n" "$activity"
+            done
+        else
+            printf "│ %-75s │\n" "暂无最近活动记录"
+        fi
+    else
+        printf "│ %-75s │\n" "日志文件不存在"
+    fi
+    echo "└─────────────────────────────────────────────────────────────────────────────┘"
+    echo
+
+    # 快速操作提示
+    print_message "$CYAN" "🔧 快速操作"
+    echo "• 查看被封禁IP: 选择选项 2"
+    echo "• 解封IP地址: 选择选项 3"
+    echo "• 查看详细日志: 选择选项 4"
+    echo "• 重启服务: 选择选项 5"
+    echo "• 诊断问题: 选择选项 7"
+}
+
 # fail2ban管理
 manage_fail2ban() {
     print_message "$BLUE" "=== fail2ban管理 ==="
@@ -1939,48 +2166,7 @@ manage_fail2ban() {
 
         case $f2b_choice in
             1)
-                print_message "$YELLOW" "fail2ban总体状态:"
-
-                # 首先检查服务是否运行
-                if ! systemctl is-active --quiet fail2ban; then
-                    print_message "$RED" "fail2ban服务未运行"
-                    print_message "$YELLOW" "服务状态:"
-                    systemctl status fail2ban --no-pager -l | head -10
-                    echo
-                    print_message "$YELLOW" "尝试启动服务..."
-                    if systemctl start fail2ban; then
-                        print_message "$GREEN" "服务启动成功"
-                        sleep 3  # 等待服务完全启动
-                    else
-                        print_message "$RED" "服务启动失败"
-                        print_message "$YELLOW" "错误日志:"
-                        journalctl -u fail2ban --no-pager -n 10
-                        continue
-                    fi
-                fi
-
-                # 检查socket文件是否存在
-                if [[ ! -S "/var/run/fail2ban/fail2ban.sock" ]]; then
-                    wait_for_fail2ban_socket 30
-                fi
-
-                # 尝试获取状态
-                if fail2ban-client status &>/dev/null; then
-                    fail2ban-client status
-                    echo
-                    print_message "$YELLOW" "各jail详细状态:"
-                    for jail in $(fail2ban-client status | grep "Jail list:" | cut -d: -f2 | tr ',' ' '); do
-                        jail=$(echo $jail | xargs)  # 去除空格
-                        if [[ -n "$jail" ]]; then
-                            echo "--- $jail ---"
-                            fail2ban-client status "$jail"
-                            echo
-                        fi
-                    done
-                else
-                    print_message "$RED" "无法连接到fail2ban服务"
-                    print_message "$YELLOW" "请检查服务状态和配置文件"
-                fi
+                show_fail2ban_status_enhanced
                 ;;
             2)
                 print_message "$YELLOW" "当前被封禁的IP地址:"
@@ -2846,6 +3032,100 @@ run_all_hardening() {
     fi
 }
 
+# 安全状态概览
+show_security_overview() {
+    clear
+    print_colored "$BLUE" "┌─────────────────────────────────────────────────────────────────────────────┐"
+    print_colored "$BLUE" "│                          VPS 安全状态概览                                 │"
+    print_colored "$BLUE" "└─────────────────────────────────────────────────────────────────────────────┘"
+    echo
+
+    # 系统信息面板
+    print_colored "$CYAN" "📊 系统信息"
+    IFS='|' read -r hostname uptime kernel os ip load_avg memory_usage disk_usage <<< "$(get_system_info)"
+    echo "┌─────────────────────────────────────────────────────────────────────────────┐"
+    printf "│ 主机名: %-20s │ 运行时间: %-30s │\n" "$hostname" "$uptime"
+    printf "│ 系统: %-22s │ 内核: %-33s │\n" "$os" "$kernel"
+    printf "│ 公网IP: %-20s │ 负载: %-8s 内存: %-6s%% 磁盘: %-6s%% │\n" "$ip" "$load_avg" "$memory_usage" "$disk_usage"
+    echo "└─────────────────────────────────────────────────────────────────────────────┘"
+    echo
+
+    # 安全服务状态
+    print_colored "$CYAN" "🔧 安全服务状态"
+    echo "┌─────────────────────────────────────────────────────────────────────────────┐"
+
+    # SSH状态
+    local ssh_status="STOPPED"
+    local ssh_details="服务未运行"
+    if systemctl is-active --quiet sshd; then
+        ssh_status="RUNNING"
+        local ssh_port=$(sshd -T 2>/dev/null | grep -i "^port" | awk '{print $2}' || echo "22")
+        local ssh_connections=$(ss -tn | grep ":$ssh_port " | wc -l)
+        local failed_today=$(grep "Failed password" /var/log/auth.log 2>/dev/null | grep "$(date '+%b %d')" | wc -l)
+        ssh_details="端口:$ssh_port 连接:$ssh_connections 今日失败:$failed_today"
+    fi
+    printf "│ "
+    draw_status_indicator "$ssh_status" "SSH服务"
+    printf "  详情: %-40s │\n" "$ssh_details"
+
+    # fail2ban状态
+    local f2b_status="STOPPED"
+    local f2b_details="服务未运行"
+    if command -v fail2ban-client &> /dev/null; then
+        if systemctl is-active --quiet fail2ban; then
+            if fail2ban-client status &>/dev/null; then
+                f2b_status="RUNNING"
+                local active_jails=$(fail2ban-client status | grep "Jail list:" | cut -d: -f2 | tr ',' ' ' | wc -w)
+                local banned_ips=0
+                local today_bans=$(grep "$(date '+%Y-%m-%d')" /var/log/fail2ban.log 2>/dev/null | grep "Ban" | wc -l)
+                f2b_details="活动jail:$active_jails 封禁IP:$banned_ips 今日封禁:$today_bans"
+            else
+                f2b_status="ERROR"
+                f2b_details="无法连接到服务"
+            fi
+        else
+            f2b_details="服务已安装但未运行"
+        fi
+    else
+        f2b_details="未安装"
+    fi
+    printf "│ "
+    draw_status_indicator "$f2b_status" "fail2ban"
+    printf "  详情: %-40s │\n" "$f2b_details"
+
+    # 防火墙状态
+    local ufw_status="STOPPED"
+    local ufw_details="防火墙未启用"
+    if command -v ufw &> /dev/null; then
+        local ufw_status_output=$(ufw status 2>/dev/null | head -1)
+        if echo "$ufw_status_output" | grep -q "Status: active"; then
+            ufw_status="RUNNING"
+            local ufw_rules=$(ufw status numbered 2>/dev/null | grep -c "^\[")
+            ufw_details="已启用 规则数:$ufw_rules"
+        else
+            ufw_details="已安装但未启用"
+        fi
+    else
+        ufw_details="未安装"
+    fi
+    printf "│ "
+    draw_status_indicator "$ufw_status" "防火墙(UFW)"
+    printf "  详情: %-40s │\n" "$ufw_details"
+
+    echo "└─────────────────────────────────────────────────────────────────────────────┘"
+    echo
+
+    # 快速操作提示
+    print_colored "$CYAN" "🔧 快速操作"
+    echo "• 安全加固: 选择选项 21 (一键全部执行)"
+    echo "• fail2ban管理: 选择选项 12"
+    echo "• 防火墙配置: 选择选项 5"
+    echo "• SSH安全配置: 选择选项 4"
+    echo "• 安全扫描: 选择选项 10"
+    echo
+    read -p "按回车键返回主菜单..." -r
+}
+
 # 主菜单
 show_menu() {
     clear
@@ -2853,6 +3133,9 @@ show_menu() {
     print_message "$BLUE" "       VPS安全加固脚本"
     print_message "$BLUE" "=================================="
     echo
+    echo "🔍 0. 安全状态概览"
+    echo ""
+    echo "🛡️  安全加固功能:"
     echo "1. 显示系统信息"
     echo "2. 系统更新"
     echo "3. 创建非root用户"
@@ -2866,6 +3149,8 @@ show_menu() {
     echo "11. 备份与恢复配置"
     echo "12. fail2ban管理"
     echo "13. 安全配置验证"
+    echo ""
+    echo "🚀 代理服务功能:"
     echo "14. 证书管理 (Cloudflare)"
     echo "15. Hysteria2服务"
     echo "16. X-UI面板"
@@ -2873,8 +3158,9 @@ show_menu() {
     echo "18. Nginx分流配置"
     echo "19. 配置vless+reality代理"
     echo "20. 代理服务管理"
-    echo "21. 一键全部执行"
-    echo "0. 退出"
+    echo ""
+    echo "⚡ 21. 一键全部执行"
+    echo "❌ 99. 退出"
     echo
 }
 
@@ -2888,9 +3174,10 @@ main() {
     
     while true; do
         show_menu
-        read -p "请选择操作 (0-21): " choice
+        read -p "请选择操作 (0-21, 99): " choice
 
         case $choice in
+            0) show_security_overview ;;
             1) show_system_info ;;
             2) update_system ;;
             3) create_user ;;
@@ -2912,7 +3199,7 @@ main() {
             19) install_vless_reality ;;
             20) manage_proxy_service ;;
             21) run_all_hardening ;;
-            0)
+            99)
                 print_message "$GREEN" "感谢使用VPS安全加固脚本!"
                 print_message "$BLUE" "备份文件位置: $BACKUP_DIR"
                 print_message "$BLUE" "日志文件位置: $LOG_FILE"
