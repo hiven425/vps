@@ -425,21 +425,108 @@ configure_ssh() {
     fi
     
     # 修改SSH端口
-    read -p "请输入新的SSH端口 (推荐2222, 默认22): " ssh_port
-    ssh_port=${ssh_port:-22}
+    print_message "$YELLOW" "SSH端口配置"
+    print_message "$CYAN" "建议使用非标准端口以减少自动扫描攻击"
+    print_message "$CYAN" "常用安全端口: 4025, 2222, 2022, 22022"
+    echo
+    read -p "请输入新的SSH端口 (推荐4025, 直接回车保持当前端口): " ssh_port
 
-    if [[ ! "$ssh_port" =~ ^[0-9]+$ ]] || [[ "$ssh_port" -lt 1 ]] || [[ "$ssh_port" -gt 65535 ]]; then
-        print_message "$RED" "无效的端口号"
-        return 1
+    # 如果用户没有输入，获取当前SSH端口
+    if [[ -z "$ssh_port" ]]; then
+        ssh_port=$(sshd -T 2>/dev/null | grep -i "^port" | awk '{print $2}' || echo "22")
+        print_message "$YELLOW" "保持当前SSH端口: $ssh_port"
+    else
+        # 验证端口号
+        if [[ ! "$ssh_port" =~ ^[0-9]+$ ]] || [[ "$ssh_port" -lt 1024 ]] || [[ "$ssh_port" -gt 65535 ]]; then
+            print_message "$RED" "无效的端口号，请使用1024-65535之间的端口"
+            return 1
+        fi
+
+        # 检查端口是否被占用
+        if netstat -tlnp 2>/dev/null | grep -q ":$ssh_port "; then
+            print_message "$RED" "端口 $ssh_port 已被占用，请选择其他端口"
+            return 1
+        fi
+
+        print_message "$GREEN" "将SSH端口设置为: $ssh_port"
     fi
 
-    # 直接应用SSH安全配置
+    # SSH密钥验证
+    print_message "$YELLOW" "SSH密钥验证"
+    print_message "$RED" "⚠️  重要警告: 即将禁用密码认证，必须确保SSH密钥已正确配置！"
+    echo
+
+    # 检查当前用户的SSH密钥
+    local current_user=$(who am i | awk '{print $1}' || echo "root")
+    local ssh_key_configured=false
+
+    # 检查root用户的SSH密钥
+    if [[ -f "/root/.ssh/authorized_keys" && -s "/root/.ssh/authorized_keys" ]]; then
+        print_message "$GREEN" "✓ Root用户已配置SSH密钥"
+        ssh_key_configured=true
+    else
+        print_message "$RED" "✗ Root用户未配置SSH密钥"
+    fi
+
+    # 获取允许登录的用户列表
+    print_message "$YELLOW" "配置允许SSH登录的用户"
+    echo "当前登录用户: $current_user"
+    echo
+    print_message "$CYAN" "请输入允许SSH登录的用户名（多个用户用空格分隔）"
+    print_message "$CYAN" "建议包含当前用户以避免被锁定"
+    read -p "允许登录的用户 (默认: $current_user root): " allowed_users
+    allowed_users=${allowed_users:-"$current_user root"}
+
+    # 验证用户是否存在并检查SSH密钥
+    local valid_users=()
+    local users_with_keys=()
+
+    for user in $allowed_users; do
+        if id "$user" &>/dev/null; then
+            valid_users+=("$user")
+            # 检查用户的SSH密钥
+            local user_home=$(eval echo "~$user")
+            if [[ -f "$user_home/.ssh/authorized_keys" && -s "$user_home/.ssh/authorized_keys" ]]; then
+                users_with_keys+=("$user")
+                print_message "$GREEN" "✓ 用户 $user 已配置SSH密钥"
+            else
+                print_message "$RED" "✗ 用户 $user 未配置SSH密钥"
+            fi
+        else
+            print_message "$RED" "✗ 用户 $user 不存在"
+        fi
+    done
+
+    # 安全检查
+    if [[ ${#users_with_keys[@]} -eq 0 ]]; then
+        print_message "$RED" "严重警告: 没有用户配置SSH密钥！"
+        print_message "$RED" "禁用密码认证后将无法登录服务器！"
+        echo
+        if ! confirm_action "是否继续配置SSH密钥? (强烈建议选择是)"; then
+            print_message "$YELLOW" "SSH配置已取消"
+            return 1
+        fi
+
+        # 引导用户配置SSH密钥
+        print_message "$YELLOW" "SSH密钥配置指南:"
+        echo "1. 在本地生成密钥对: ssh-keygen -t ed25519 -C 'your-email@example.com'"
+        echo "2. 复制公钥到服务器: ssh-copy-id -p $ssh_port user@server-ip"
+        echo "3. 或手动添加公钥到 ~/.ssh/authorized_keys"
+        echo
+        read -p "配置完成后按回车继续..." -r
+    fi
+
+    # 应用SSH安全配置
     print_message "$YELLOW" "应用SSH安全配置..."
+
+    # 备份原始配置
+    backup_file "/etc/ssh/sshd_config"
 
     # 使用sshd_config.d目录创建自定义配置
     cat > /etc/ssh/sshd_config.d/99-security-hardening.conf << EOF
 # 安全加固自定义SSH配置
 # 创建时间: $(date)
+# 警告: 此配置禁用密码认证，请确保SSH密钥已正确配置
 
 # SSH端口配置
 Port $ssh_port
@@ -466,6 +553,9 @@ KerberosAuthentication no
 GSSAPIAuthentication no
 UsePAM yes
 
+# 允许的用户
+AllowUsers ${valid_users[*]}
+
 # 禁用不安全的功能
 AllowAgentForwarding no
 AllowTcpForwarding no
@@ -481,38 +571,18 @@ Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.
 MACs hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha2-256,hmac-sha2-512
 EOF
 
-    log_message "SSH安全配置已应用: 端口$ssh_port, root仅密钥登录, 禁用密码认证"
-    
-    # 检查SSH密钥配置
-    print_message "$YELLOW" "检查SSH密钥配置..."
+    log_message "SSH安全配置已应用: 端口$ssh_port, 允许用户: ${valid_users[*]}, 禁用密码认证"
 
-    ssh_key_configured=false
-
-    # 检查root用户的SSH密钥
-    if [[ -f "/root/.ssh/authorized_keys" && -s "/root/.ssh/authorized_keys" ]]; then
-        print_message "$GREEN" "✓ Root用户已配置SSH密钥"
-        ssh_key_configured=true
-    else
-        print_message "$RED" "✗ Root用户未配置SSH密钥"
-        print_message "$YELLOW" "配置SSH密钥的方法:"
-        echo "1. 在本地生成密钥对: ssh-keygen -t ed25519"
-        echo "2. 复制公钥到服务器: ssh-copy-id root@服务器IP"
-        echo "3. 或手动添加公钥到 /root/.ssh/authorized_keys"
-        echo
-
+    # 最终安全检查
+    if [[ ${#users_with_keys[@]} -eq 0 ]]; then
+        print_message "$RED" "最终警告: 没有用户配置SSH密钥！"
         if confirm_action "是否现在配置SSH密钥?"; then
             setup_ssh_key_for_user "root"
-            if [[ -f "/root/.ssh/authorized_keys" && -s "/root/.ssh/authorized_keys" ]]; then
-                ssh_key_configured=true
+        else
+            print_message "$RED" "继续将导致无法通过SSH登录！"
+            if ! confirm_action "确认继续? (非常危险)"; then
+                return 1
             fi
-        fi
-    fi
-
-    if [[ "$ssh_key_configured" != true ]]; then
-        print_message "$RED" "警告: 未配置SSH密钥，但将禁用密码认证"
-        print_message "$YELLOW" "这可能导致无法通过SSH登录服务器"
-        if ! confirm_action "确认继续? (建议先配置SSH密钥)"; then
-            return 1
         fi
     fi
     
@@ -2001,7 +2071,8 @@ show_fail2ban_status_enhanced() {
                 jail=$(echo $jail | xargs)
                 if [[ -n "$jail" ]]; then
                     ((active_jails++))
-                    local banned_count=$(fail2ban-client status "$jail" 2>/dev/null | grep "Currently banned:" | awk '{print $3}' || echo "0")
+                    local banned_count=$(fail2ban-client status "$jail" 2>/dev/null | grep "Currently banned:" | awk '{print $3}' | grep -o '[0-9]*' || echo "0")
+                    banned_count=${banned_count:-0}
                     total_banned=$((total_banned + banned_count))
                 fi
             done
@@ -2078,15 +2149,20 @@ show_fail2ban_status_enhanced() {
                 jail=$(echo $jail | xargs)
                 if [[ -n "$jail" ]]; then
                     local jail_info=$(fail2ban-client status "$jail" 2>/dev/null)
-                    local banned_count=$(echo "$jail_info" | grep "Currently banned:" | awk '{print $3}' || echo "0")
-                    local failed_count=$(echo "$jail_info" | grep "Currently failed:" | awk '{print $3}' || echo "0")
+                    local banned_count=$(echo "$jail_info" | grep "Currently banned:" | awk '{print $3}' | grep -o '[0-9]*' || echo "0")
+                    local failed_count=$(echo "$jail_info" | grep "Currently failed:" | awk '{print $3}' | grep -o '[0-9]*' || echo "0")
+
+                    # 确保是数字
+                    banned_count=${banned_count:-0}
+                    failed_count=${failed_count:-0}
+
                     local status_icon="🟢"
 
                     # 根据状态设置图标
-                    if [[ $banned_count -gt 0 ]]; then
+                    if [[ $banned_count -gt 0 ]] 2>/dev/null; then
                         status_icon="🟡"
                     fi
-                    if [[ $failed_count -gt 10 ]]; then
+                    if [[ $failed_count -gt 10 ]] 2>/dev/null; then
                         status_icon="🔴"
                     fi
 
