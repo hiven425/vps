@@ -1071,6 +1071,403 @@ security_validation() {
     fi
 }
 
+# 配置vless+reality代理
+install_vless_reality() {
+    print_message "$BLUE" "=== 配置vless+reality代理 ==="
+
+    # 检查系统要求
+    if ! command -v curl &> /dev/null; then
+        print_message "$YELLOW" "安装curl..."
+        apt update && apt install -y curl
+    fi
+
+    # 检查是否已安装
+    if [[ -f "/usr/local/bin/xray" ]] || [[ -f "/etc/systemd/system/xray.service" ]]; then
+        print_message "$YELLOW" "检测到已安装的代理服务"
+        if ! confirm_action "是否重新配置?"; then
+            return 0
+        fi
+    fi
+
+    print_message "$YELLOW" "vless+reality配置需要以下信息:"
+    echo "1. 监听端口 (建议: 443)"
+    echo "2. 伪装域名 (如: www.microsoft.com)"
+    echo "3. 用户UUID (自动生成或手动输入)"
+    echo "4. 传输协议 (TCP/gRPC)"
+    echo
+
+    if ! confirm_action "是否继续配置vless+reality?"; then
+        return 0
+    fi
+
+    # 收集配置信息
+    read -p "请输入监听端口 (默认443): " vless_port
+    vless_port=${vless_port:-443}
+
+    # 验证端口
+    if [[ ! "$vless_port" =~ ^[0-9]+$ ]] || [[ "$vless_port" -lt 1 ]] || [[ "$vless_port" -gt 65535 ]]; then
+        print_message "$RED" "无效的端口号"
+        return 1
+    fi
+
+    read -p "请输入伪装域名 (默认: www.microsoft.com): " dest_domain
+    dest_domain=${dest_domain:-"www.microsoft.com"}
+
+    read -p "请输入用户UUID (留空自动生成): " user_uuid
+    if [[ -z "$user_uuid" ]]; then
+        # 生成UUID
+        if command -v uuidgen &> /dev/null; then
+            user_uuid=$(uuidgen)
+        else
+            user_uuid=$(cat /proc/sys/kernel/random/uuid)
+        fi
+    fi
+
+    print_message "$YELLOW" "传输协议选择:"
+    echo "1. TCP (推荐，兼容性好)"
+    echo "2. gRPC (性能更好，但可能被检测)"
+    read -p "请选择 (1-2): " transport_choice
+
+    case $transport_choice in
+        1) transport_type="tcp" ;;
+        2) transport_type="grpc" ;;
+        *) transport_type="tcp" ;;
+    esac
+
+    print_message "$YELLOW" "配置信息确认:"
+    echo "监听端口: $vless_port"
+    echo "伪装域名: $dest_domain"
+    echo "用户UUID: $user_uuid"
+    echo "传输协议: $transport_type"
+    echo
+
+    if ! confirm_action "确认配置信息?"; then
+        return 0
+    fi
+
+    log_message "开始配置vless+reality代理"
+
+    # 安装Xray
+    print_message "$YELLOW" "安装Xray核心..."
+    if ! install_xray_core; then
+        print_message "$RED" "Xray安装失败"
+        return 1
+    fi
+
+    # 生成配置文件
+    print_message "$YELLOW" "生成配置文件..."
+    if ! generate_vless_config "$vless_port" "$dest_domain" "$user_uuid" "$transport_type"; then
+        print_message "$RED" "配置文件生成失败"
+        return 1
+    fi
+
+    # 配置防火墙
+    print_message "$YELLOW" "配置防火墙规则..."
+    if command -v ufw &> /dev/null; then
+        ufw allow "$vless_port"/tcp comment 'vless+reality'
+        log_message "开放端口: $vless_port"
+    fi
+
+    # 启动服务
+    print_message "$YELLOW" "启动vless+reality服务..."
+    systemctl enable xray
+    systemctl start xray
+
+    if systemctl is-active --quiet xray; then
+        print_message "$GREEN" "vless+reality服务启动成功!"
+        log_message "vless+reality服务配置完成"
+
+        # 生成客户端配置
+        generate_client_config "$vless_port" "$dest_domain" "$user_uuid" "$transport_type"
+
+        # 显示服务状态
+        print_message "$YELLOW" "服务状态:"
+        systemctl status xray --no-pager -l
+
+    else
+        print_message "$RED" "vless+reality服务启动失败"
+        print_message "$YELLOW" "查看错误日志:"
+        journalctl -u xray --no-pager -l
+        return 1
+    fi
+}
+
+# 安装Xray核心
+install_xray_core() {
+    # 下载并安装Xray
+    local install_script="/tmp/install-xray.sh"
+
+    if curl -L -o "$install_script" "https://github.com/XTLS/Xray-install/raw/main/install-release.sh"; then
+        chmod +x "$install_script"
+        bash "$install_script"
+        rm -f "$install_script"
+        return 0
+    else
+        print_message "$RED" "下载Xray安装脚本失败"
+        return 1
+    fi
+}
+
+# 生成vless+reality配置
+generate_vless_config() {
+    local port=$1
+    local dest_domain=$2
+    local uuid=$3
+    local transport=$4
+
+    # 生成密钥对
+    local key_pair=$(/usr/local/bin/xray x25519)
+    local private_key=$(echo "$key_pair" | grep "Private key:" | cut -d' ' -f3)
+    local public_key=$(echo "$key_pair" | grep "Public key:" | cut -d' ' -f3)
+
+    # 获取目标网站证书信息
+    local short_id=$(openssl rand -hex 8)
+
+    # 创建配置目录
+    mkdir -p /usr/local/etc/xray
+
+    # 生成服务器配置
+    cat > /usr/local/etc/xray/config.json << EOF
+{
+    "log": {
+        "loglevel": "warning",
+        "access": "/var/log/xray/access.log",
+        "error": "/var/log/xray/error.log"
+    },
+    "inbounds": [
+        {
+            "port": $port,
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "id": "$uuid",
+                        "flow": "xtls-rprx-vision"
+                    }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "$transport",
+                "security": "reality",
+                "realitySettings": {
+                    "show": false,
+                    "dest": "$dest_domain:443",
+                    "xver": 0,
+                    "serverNames": [
+                        "$dest_domain"
+                    ],
+                    "privateKey": "$private_key",
+                    "shortIds": [
+                        "$short_id"
+                    ]
+                }
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "freedom",
+            "tag": "direct"
+        }
+    ]
+}
+EOF
+
+    # 创建日志目录
+    mkdir -p /var/log/xray
+    chown nobody:nogroup /var/log/xray
+
+    # 保存配置信息供客户端使用
+    cat > /root/vless-reality-config.txt << EOF
+# vless+reality配置信息
+服务器地址: $(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+端口: $port
+用户ID: $uuid
+传输协议: $transport
+伪装域名: $dest_domain
+公钥: $public_key
+短ID: $short_id
+配置时间: $(date)
+EOF
+
+    log_message "vless+reality配置文件已生成"
+    return 0
+}
+
+# 生成客户端配置
+generate_client_config() {
+    local port=$1
+    local dest_domain=$2
+    local uuid=$3
+    local transport=$4
+
+    local server_ip=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+    local public_key=$(grep "公钥:" /root/vless-reality-config.txt | cut -d' ' -f2)
+    local short_id=$(grep "短ID:" /root/vless-reality-config.txt | cut -d' ' -f2)
+
+    print_message "$GREEN" "客户端配置信息:"
+    echo "=================================="
+    echo "协议: VLESS"
+    echo "地址: $server_ip"
+    echo "端口: $port"
+    echo "用户ID: $uuid"
+    echo "流控: xtls-rprx-vision"
+    echo "传输协议: $transport"
+    echo "传输层安全: reality"
+    echo "SNI: $dest_domain"
+    echo "Fingerprint: chrome"
+    echo "PublicKey: $public_key"
+    echo "ShortId: $short_id"
+    echo "SpiderX: /"
+    echo "=================================="
+
+    # 生成分享链接
+    local vless_link="vless://$uuid@$server_ip:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$dest_domain&fp=chrome&pbk=$public_key&sid=$short_id&type=$transport#VPS-Reality"
+
+    echo
+    print_message "$YELLOW" "分享链接:"
+    echo "$vless_link"
+
+    # 保存到文件
+    cat > /root/vless-client-config.txt << EOF
+# vless+reality客户端配置
+
+## 手动配置信息
+协议: VLESS
+地址: $server_ip
+端口: $port
+用户ID: $uuid
+流控: xtls-rprx-vision
+传输协议: $transport
+传输层安全: reality
+SNI: $dest_domain
+Fingerprint: chrome
+PublicKey: $public_key
+ShortId: $short_id
+SpiderX: /
+
+## 分享链接
+$vless_link
+
+## 使用说明
+1. 复制分享链接到支持vless+reality的客户端
+2. 或者手动填入上述配置信息
+3. 推荐客户端: v2rayN, Clash Meta, sing-box
+
+配置生成时间: $(date)
+EOF
+
+    print_message "$GREEN" "客户端配置已保存到: /root/vless-client-config.txt"
+    log_message "生成vless+reality客户端配置"
+}
+
+# 代理服务管理
+manage_proxy_service() {
+    print_message "$BLUE" "=== 代理服务管理 ==="
+
+    if [[ ! -f "/usr/local/bin/xray" ]]; then
+        print_message "$RED" "未检测到Xray服务，请先配置vless+reality代理"
+        return 1
+    fi
+
+    while true; do
+        echo
+        print_message "$YELLOW" "代理服务管理选项:"
+        echo "1. 查看服务状态"
+        echo "2. 查看客户端配置"
+        echo "3. 重启代理服务"
+        echo "4. 查看服务日志"
+        echo "5. 更新用户配置"
+        echo "6. 卸载代理服务"
+        echo "0. 返回主菜单"
+        echo
+
+        read -p "请选择操作 (0-6): " proxy_choice
+
+        case $proxy_choice in
+            1)
+                print_message "$YELLOW" "Xray服务状态:"
+                systemctl status xray --no-pager
+                echo
+                print_message "$YELLOW" "监听端口:"
+                ss -tlnp | grep xray || echo "未找到监听端口"
+                ;;
+            2)
+                if [[ -f "/root/vless-client-config.txt" ]]; then
+                    print_message "$YELLOW" "客户端配置信息:"
+                    cat /root/vless-client-config.txt
+                else
+                    print_message "$RED" "未找到客户端配置文件"
+                fi
+                ;;
+            3)
+                if confirm_action "是否重启Xray服务?"; then
+                    systemctl restart xray
+                    sleep 2
+                    if systemctl is-active --quiet xray; then
+                        print_message "$GREEN" "Xray服务重启成功"
+                    else
+                        print_message "$RED" "Xray服务重启失败"
+                        journalctl -u xray --no-pager -l | tail -10
+                    fi
+                fi
+                ;;
+            4)
+                print_message "$YELLOW" "Xray服务日志 (最近20行):"
+                journalctl -u xray --no-pager -l | tail -20
+                echo
+                if [[ -f "/var/log/xray/error.log" ]]; then
+                    print_message "$YELLOW" "错误日志:"
+                    tail -10 /var/log/xray/error.log
+                fi
+                ;;
+            5)
+                print_message "$YELLOW" "更新用户配置功能开发中..."
+                print_message "$BLUE" "当前可以通过重新运行配置功能来更新"
+                ;;
+            6)
+                print_message "$RED" "⚠️  警告: 这将完全卸载代理服务"
+                if confirm_action "确认卸载Xray代理服务?"; then
+                    systemctl stop xray
+                    systemctl disable xray
+                    rm -f /etc/systemd/system/xray.service
+                    rm -rf /usr/local/bin/xray
+                    rm -rf /usr/local/etc/xray
+                    rm -rf /var/log/xray
+                    rm -f /root/vless-*.txt
+                    systemctl daemon-reload
+
+                    # 移除防火墙规则
+                    if command -v ufw &> /dev/null; then
+                        print_message "$YELLOW" "是否移除相关防火墙规则?"
+                        ufw status numbered | grep -E "(vless|reality|443)"
+                        read -p "请输入要删除的规则编号 (多个用空格分隔，留空跳过): " rule_numbers
+                        if [[ -n "$rule_numbers" ]]; then
+                            for rule_num in $rule_numbers; do
+                                ufw delete "$rule_num" 2>/dev/null || true
+                            done
+                        fi
+                    fi
+
+                    print_message "$GREEN" "Xray代理服务已卸载"
+                    log_message "卸载vless+reality代理服务"
+                    break
+                fi
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_message "$RED" "无效选择"
+                ;;
+        esac
+
+        echo
+        read -p "按回车键继续..." -r
+    done
+}
+
 # 一键全部执行
 run_all_hardening() {
     print_message "$BLUE" "=== 一键安全加固 ==="
@@ -1086,6 +1483,7 @@ run_all_hardening() {
     echo "9. 安全扫描检查"
     echo "10. 备份配置"
     echo "11. fail2ban高级配置"
+    echo "12. vless+reality代理配置"
     echo
 
     if confirm_action "是否继续一键执行所有安全加固措施?"; then
@@ -1102,10 +1500,32 @@ run_all_hardening() {
         security_scan
         backup_recovery
 
-        print_message "$GREEN" "一键安全加固完成!"
+        print_message "$GREEN" "安全加固完成!"
+
+        # 询问是否配置代理服务
+        echo
+        if confirm_action "是否配置vless+reality代理服务?"; then
+            install_vless_reality
+        fi
+
+        print_message "$GREEN" "一键部署完成!"
         print_message "$BLUE" "请检查配置并重新连接SSH"
         print_message "$YELLOW" "建议重启系统以确保所有配置生效"
-        log_message "一键安全加固完成"
+
+        # 显示配置摘要
+        echo
+        print_message "$BLUE" "配置摘要:"
+        echo "- SSH端口: $(grep "^Port" /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' || echo "22")"
+        echo "- 防火墙: $(ufw status | head -1)"
+        echo "- fail2ban: $(systemctl is-active fail2ban 2>/dev/null || echo "未安装")"
+        if [[ -f "/usr/local/etc/xray/config.json" ]]; then
+            echo "- vless+reality: 已配置"
+            echo "- 客户端配置: /root/vless-client-config.txt"
+        fi
+        echo "- 备份目录: $BACKUP_DIR"
+        echo "- 日志文件: $LOG_FILE"
+
+        log_message "一键安全加固和代理配置完成"
     fi
 }
 
@@ -1129,7 +1549,9 @@ show_menu() {
     echo "11. 备份与恢复配置"
     echo "12. fail2ban管理"
     echo "13. 安全配置验证"
-    echo "14. 一键全部执行"
+    echo "14. 配置vless+reality代理"
+    echo "15. 代理服务管理"
+    echo "16. 一键全部执行"
     echo "0. 退出"
     echo
 }
@@ -1144,7 +1566,7 @@ main() {
     
     while true; do
         show_menu
-        read -p "请选择操作 (0-14): " choice
+        read -p "请选择操作 (0-16): " choice
         
         case $choice in
             1) show_system_info ;;
@@ -1160,7 +1582,9 @@ main() {
             11) backup_recovery ;;
             12) manage_fail2ban ;;
             13) security_validation ;;
-            14) run_all_hardening ;;
+            14) install_vless_reality ;;
+            15) manage_proxy_service ;;
+            16) run_all_hardening ;;
             0)
                 print_message "$GREEN" "感谢使用VPS安全加固脚本!"
                 print_message "$BLUE" "备份文件位置: $BACKUP_DIR"
