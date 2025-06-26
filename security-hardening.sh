@@ -783,40 +783,96 @@ EOF
         systemctl restart fail2ban
         log_message "启动fail2ban服务"
 
-        # 等待fail2ban服务完全初始化
-        print_message "$YELLOW" "等待fail2ban服务初始化..."
-        for i in {1..10}; do
+        # 使用systemctl检查服务状态
+        print_message "$YELLOW" "等待fail2ban服务启动 (可能需要30-60秒)..."
+        max_wait=60  # 最多等待60秒
+        socket_ready=false
+        service_ready=false
+
+        for i in $(seq 1 $max_wait); do
+            # 检查1: 服务是否处于active状态
             if systemctl is-active --quiet fail2ban; then
-                sleep 2  # 即使服务active，也多等待一下socket文件准备
-                break
+                service_ready=true
+                print_message "$GREEN" "✓ 服务已激活"
+                
+                # 检查2: socket文件是否存在并可访问
+                if [[ -S "/var/run/fail2ban/fail2ban.sock" ]]; then
+                    socket_ready=true
+                    print_message "$GREEN" "✓ Socket文件已就绪"
+                    break
+                fi
             fi
-            echo -n "."
+            
+            # 显示等待进度
+            if (( i % 5 == 0 )); then
+                echo -n "$i/$max_wait秒 "
+            else
+                echo -n "."
+            fi
             sleep 1
         done
         echo
 
-        # 检查服务状态
-        if ! systemctl is-active --quiet fail2ban; then
-            print_message "$RED" "fail2ban服务未能成功启动"
-            journalctl -u fail2ban --no-pager -l | tail -20
-            return 1
-        fi
-
-        # 使用系统服务状态检查
-        print_message "$GREEN" "fail2ban服务状态:"
-        systemctl status fail2ban --no-pager -l | head -10
-
-        # 等待额外时间确保socket文件就绪
-        sleep 5
-
-        # 尝试获取fail2ban详细状态
-        print_message "$YELLOW" "尝试获取fail2ban详细状态..."
-        if fail2ban-client status &>/dev/null; then
-            print_message "$GREEN" "fail2ban运行正常，已激活的防护:"
-            fail2ban-client status | grep "Jail list" | sed 's/.*Jail list:/Jail list:/'
+        # 即使socket未就绪，也尝试继续执行
+        if [[ "$service_ready" == true ]]; then
+            print_message "$GREEN" "fail2ban服务已启动"
+            
+            # 使用systemd查询服务状态
+            print_message "$YELLOW" "服务详细信息:"
+            systemctl status fail2ban --no-pager -l | head -10
+            
+            # 检查系统日志中的fail2ban启动信息
+            print_message "$YELLOW" "Fail2ban日志信息:"
+            journalctl -u fail2ban --since "1 minute ago" --no-pager -l | grep -E "Starting|Started|Stopping|Stopped|ERROR" | tail -5
+            
+            if [[ "$socket_ready" == false ]]; then
+                print_message "$YELLOW" "警告: fail2ban服务已启动，但socket文件可能尚未就绪"
+                print_message "$YELLOW" "服务可能仍在初始化，这不影响fail2ban功能"
+                
+                # 显示socket文件信息(如果存在)
+                if [[ -e "/var/run/fail2ban/fail2ban.sock" ]]; then
+                    ls -la /var/run/fail2ban/fail2ban.sock
+                else
+                    print_message "$YELLOW" "Socket文件尚未创建: /var/run/fail2ban/fail2ban.sock"
+                fi
+                
+                # 尝试强制重新加载服务
+                print_message "$YELLOW" "尝试重新加载服务..."
+                systemctl daemon-reload
+                systemctl try-restart fail2ban
+                sleep 5
+            fi
+            
+            # 最后尝试使用客户端获取状态(即使失败也继续)
+            print_message "$YELLOW" "尝试获取监狱信息 (可能不成功)..."
+            if fail2ban-client status &>/dev/null; then
+                print_message "$GREEN" "✓ fail2ban监狱列表:"
+                fail2ban-client status | grep "Jail list" | sed 's/.*Jail list:/Jail list:/'
+            else
+                print_message "$YELLOW" "注意: fail2ban-client命令暂时无法使用"
+                print_message "$YELLOW" "这不影响fail2ban功能，服务仍在运行中"
+                print_message "$YELLOW" "稍后可使用以下命令查看状态:"
+                echo "  systemctl status fail2ban"
+                echo "  fail2ban-client status"
+            fi
         else
-            print_message "$YELLOW" "fail2ban-client命令暂时无法使用，但服务已启动"
-            print_message "$YELLOW" "请稍后使用 'fail2ban-client status' 手动检查详细状态"
+            print_message "$RED" "fail2ban服务启动失败或超时"
+            print_message "$YELLOW" "检查服务状态和错误日志:"
+            systemctl status fail2ban --no-pager -l
+            journalctl -u fail2ban --no-pager -n 20
+            
+            if confirm_action "是否尝试修复服务?"; then
+                print_message "$YELLOW" "尝试修复fail2ban服务..."
+                systemctl daemon-reload
+                systemctl reset-failed fail2ban.service
+                systemctl restart fail2ban
+                sleep 5
+                if systemctl is-active --quiet fail2ban; then
+                    print_message "$GREEN" "✓ 服务已恢复运行"
+                else
+                    print_message "$RED" "服务恢复失败，可能需要手动检查"
+                fi
+            fi
         fi
 
         print_message "$YELLOW" "fail2ban配置说明:"
