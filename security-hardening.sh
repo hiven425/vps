@@ -111,101 +111,209 @@ update_system() {
 # 创建非root用户
 create_user() {
     print_message "$BLUE" "=== 创建非root用户 ==="
-    
-    read -p "请输入新用户名: " username
-    if [[ -z "$username" ]]; then
-        print_message "$RED" "用户名不能为空"
-        return 1
-    fi
-    
-    if id "$username" &>/dev/null; then
-        print_message "$YELLOW" "用户 $username 已存在"
-        return 0
-    fi
-    
+
+    while true; do
+        read -p "请输入新用户名: " username
+        if [[ -z "$username" ]]; then
+            print_message "$RED" "用户名不能为空，请重新输入"
+            continue
+        fi
+
+        # 验证用户名格式
+        if [[ ! "$username" =~ ^[a-z][a-z0-9_-]*$ ]]; then
+            print_message "$RED" "用户名格式不正确，请使用小写字母开头，只包含字母、数字、下划线和连字符"
+            continue
+        fi
+
+        if id "$username" &>/dev/null; then
+            print_message "$YELLOW" "用户 $username 已存在"
+            if confirm_action "是否为现有用户配置SSH密钥?"; then
+                setup_ssh_key_for_user "$username"
+            fi
+            return 0
+        fi
+        break
+    done
+
+    # 设置密码（可见输入）
+    print_message "$YELLOW" "为用户 $username 设置密码"
+    while true; do
+        read -p "请输入密码: " password
+        if [[ ${#password} -lt 8 ]]; then
+            print_message "$RED" "密码长度至少8位，请重新输入"
+            continue
+        fi
+
+        read -p "请确认密码: " password_confirm
+        if [[ "$password" != "$password_confirm" ]]; then
+            print_message "$RED" "密码不匹配，请重新输入"
+            continue
+        fi
+        break
+    done
+
     if confirm_action "创建用户 $username 并添加到sudo组?"; then
-        adduser "$username"
+        # 创建用户并设置密码
+        useradd -m -s /bin/bash "$username"
+        echo "$username:$password" | chpasswd
         usermod -aG sudo "$username"
+
         log_message "创建用户 $username 并添加到sudo组"
-        
+
         # 设置SSH目录
         user_home="/home/$username"
         mkdir -p "$user_home/.ssh"
         chmod 700 "$user_home/.ssh"
         chown "$username:$username" "$user_home/.ssh"
-        
+
         print_message "$GREEN" "用户 $username 创建成功"
-        print_message "$YELLOW" "请记住为该用户配置SSH密钥"
+
+        # 配置SSH密钥
+        setup_ssh_key_for_user "$username"
     fi
+}
+
+# 为用户配置SSH密钥
+setup_ssh_key_for_user() {
+    local username=$1
+    local user_home="/home/$username"
+
+    print_message "$YELLOW" "为用户 $username 配置SSH密钥"
+    echo "选择配置方式:"
+    echo "1. 粘贴现有公钥"
+    echo "2. 复制root用户的authorized_keys"
+    echo "3. 跳过密钥配置"
+
+    read -p "请选择 (1-3): " key_choice
+
+    case $key_choice in
+        1)
+            print_message "$YELLOW" "请粘贴SSH公钥:"
+            print_message "$BLUE" "提示:"
+            echo "- 公钥通常以 ssh-rsa, ssh-ed25519, ecdsa-sha2- 开头"
+            echo "- 在终端中右键粘贴，或使用 Ctrl+Shift+V"
+            echo "- 粘贴后直接按回车确认"
+            echo "- 如需取消，输入 'cancel'"
+            echo
+            read -p "请粘贴SSH公钥: " ssh_key
+
+            if [[ "$ssh_key" == "cancel" ]]; then
+                print_message "$YELLOW" "已取消SSH密钥配置"
+                return 0
+            fi
+
+            # 清理可能的多余空格和换行
+            ssh_key=$(echo "$ssh_key" | tr -d '\n\r' | sed 's/[[:space:]]\+/ /g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+            if [[ -n "$ssh_key" && "$ssh_key" =~ ^(ssh-rsa|ssh-ed25519|ssh-dss|ecdsa-sha2-) ]]; then
+                # 确保目录存在
+                mkdir -p "$user_home/.ssh"
+
+                # 如果文件已存在，追加而不是覆盖
+                if [[ -f "$user_home/.ssh/authorized_keys" ]]; then
+                    echo "$ssh_key" >> "$user_home/.ssh/authorized_keys"
+                    print_message "$GREEN" "SSH公钥已追加到现有配置"
+                else
+                    echo "$ssh_key" > "$user_home/.ssh/authorized_keys"
+                    print_message "$GREEN" "SSH公钥已配置"
+                fi
+
+                chmod 600 "$user_home/.ssh/authorized_keys"
+                chmod 700 "$user_home/.ssh"
+                chown -R "$username:$username" "$user_home/.ssh"
+
+                log_message "为用户 $username 配置SSH公钥"
+
+                # 显示配置的密钥信息
+                key_type=$(echo "$ssh_key" | awk '{print $1}')
+                key_comment=$(echo "$ssh_key" | awk '{print $3}')
+                print_message "$BLUE" "已配置密钥类型: $key_type"
+                if [[ -n "$key_comment" ]]; then
+                    print_message "$BLUE" "密钥备注: $key_comment"
+                fi
+            else
+                print_message "$RED" "无效的SSH公钥格式"
+                print_message "$YELLOW" "有效的公钥应该类似于:"
+                echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx user@hostname"
+                echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx user@hostname"
+            fi
+            ;;
+        2)
+            if [[ -f "/root/.ssh/authorized_keys" ]]; then
+                cp "/root/.ssh/authorized_keys" "$user_home/.ssh/authorized_keys"
+                chmod 600 "$user_home/.ssh/authorized_keys"
+                chown "$username:$username" "$user_home/.ssh/authorized_keys"
+                print_message "$GREEN" "已复制root用户的SSH密钥"
+                log_message "为用户 $username 复制root的SSH密钥"
+            else
+                print_message "$RED" "root用户没有配置SSH密钥"
+            fi
+            ;;
+        3)
+            print_message "$YELLOW" "跳过SSH密钥配置"
+            print_message "$RED" "警告: 如果禁用密码认证，该用户将无法通过SSH登录"
+            ;;
+        *)
+            print_message "$RED" "无效选择，跳过密钥配置"
+            ;;
+    esac
 }
 
 # SSH安全配置
 configure_ssh() {
     print_message "$BLUE" "=== SSH安全配置 ==="
-    
+
     backup_file "/etc/ssh/sshd_config"
+
+    # 检查并处理sshd_config.d目录中的配置文件
+    print_message "$YELLOW" "检查SSH配置目录..."
+    if [[ -d "/etc/ssh/sshd_config.d" ]]; then
+        config_files=$(ls /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true)
+        if [[ -n "$config_files" ]]; then
+            print_message "$YELLOW" "发现现有SSH配置文件:"
+            ls -la /etc/ssh/sshd_config.d/*.conf
+            echo
+            if confirm_action "是否备份并禁用这些配置文件以避免冲突?"; then
+                for conf_file in $config_files; do
+                    backup_name="${conf_file}.bak-$(date +%Y%m%d-%H%M%S)"
+                    mv "$conf_file" "$backup_name"
+                    print_message "$GREEN" "已备份: $conf_file -> $backup_name"
+                    log_message "备份SSH配置文件: $conf_file"
+                done
+            fi
+        fi
+    else
+        mkdir -p /etc/ssh/sshd_config.d
+    fi
     
     # 修改SSH端口
-    read -p "请输入新的SSH端口 (默认22): " ssh_port
+    read -p "请输入新的SSH端口 (推荐2222, 默认22): " ssh_port
     ssh_port=${ssh_port:-22}
-    
+
     if [[ ! "$ssh_port" =~ ^[0-9]+$ ]] || [[ "$ssh_port" -lt 1 ]] || [[ "$ssh_port" -gt 65535 ]]; then
         print_message "$RED" "无效的端口号"
         return 1
     fi
-    
-    if confirm_action "将SSH端口修改为 $ssh_port ?"; then
-        sed -i "s/^#*Port .*/Port $ssh_port/" /etc/ssh/sshd_config
-        log_message "SSH端口修改为 $ssh_port"
-    fi
-    
-    # 配置root登录策略
-    print_message "$YELLOW" "Root登录配置选项:"
-    echo "1. 完全禁用root登录 (PermitRootLogin no)"
-    echo "2. 仅允许密钥认证 (PermitRootLogin prohibit-password) - 推荐"
-    echo "3. 保持当前设置"
-    read -p "请选择 (1-3): " root_choice
 
-    case $root_choice in
-        1)
-            if confirm_action "完全禁用root登录? (确保已创建sudo用户)"; then
-                sed -i "s/^#*PermitRootLogin .*/PermitRootLogin no/" /etc/ssh/sshd_config
-                log_message "完全禁用root用户SSH登录"
-            fi
-            ;;
-        2)
-            if confirm_action "设置root仅允许密钥认证? (推荐设置)"; then
-                sed -i "s/^#*PermitRootLogin .*/PermitRootLogin prohibit-password/" /etc/ssh/sshd_config
-                log_message "设置root仅允许密钥认证"
-            fi
-            ;;
-        3)
-            print_message "$YELLOW" "保持当前root登录设置"
-            ;;
-        *)
-            print_message "$RED" "无效选择，保持当前设置"
-            ;;
-    esac
-    
-    # 禁用密码认证
-    if confirm_action "是否禁用密码认证，仅允许密钥认证? (确保已配置SSH密钥)"; then
-        sed -i "s/^#*PasswordAuthentication .*/PasswordAuthentication no/" /etc/ssh/sshd_config
-        sed -i "s/^#*PubkeyAuthentication .*/PubkeyAuthentication yes/" /etc/ssh/sshd_config
-        log_message "禁用密码认证，启用密钥认证"
-    fi
-    
-    # 其他SSH安全配置
-    if confirm_action "是否应用高级SSH安全配置?"; then
-        # 获取当前用户和新创建的用户
-        current_user=$(whoami)
+    # 直接应用SSH安全配置
+    print_message "$YELLOW" "应用SSH安全配置..."
 
-        # 询问允许的用户
-        read -p "请输入允许SSH登录的用户名 (多个用户用空格分隔，默认: $current_user): " allowed_users
-        allowed_users=${allowed_users:-$current_user}
+    # 使用sshd_config.d目录创建自定义配置
+    cat > /etc/ssh/sshd_config.d/99-security-hardening.conf << EOF
+# 安全加固自定义SSH配置
+# 创建时间: $(date)
 
-        cat >> /etc/ssh/sshd_config << EOF
+# SSH端口配置
+Port $ssh_port
 
-# 高级安全加固配置
+# Root用户仅允许密钥登录
+PermitRootLogin prohibit-password
+
+# 认证配置
+PasswordAuthentication no
+PubkeyAuthentication yes
+
+# 高级安全配置
 Protocol 2
 MaxAuthTries 3
 ClientAliveInterval 300
@@ -213,7 +321,6 @@ ClientAliveCountMax 2
 LoginGraceTime 60
 MaxStartups 10:30:100
 MaxSessions 4
-AllowUsers $allowed_users
 
 # 禁用不安全的认证方式
 ChallengeResponseAuthentication no
@@ -235,15 +342,54 @@ KexAlgorithms curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-
 Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
 MACs hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha2-256,hmac-sha2-512
 EOF
-        log_message "应用高级SSH安全配置"
-        print_message "$GREEN" "已应用高级SSH安全配置"
-        print_message "$YELLOW" "允许登录的用户: $allowed_users"
+
+    log_message "SSH安全配置已应用: 端口$ssh_port, root仅密钥登录, 禁用密码认证"
+    
+    # 检查SSH密钥配置
+    print_message "$YELLOW" "检查SSH密钥配置..."
+
+    ssh_key_configured=false
+
+    # 检查root用户的SSH密钥
+    if [[ -f "/root/.ssh/authorized_keys" && -s "/root/.ssh/authorized_keys" ]]; then
+        print_message "$GREEN" "✓ Root用户已配置SSH密钥"
+        ssh_key_configured=true
+    else
+        print_message "$RED" "✗ Root用户未配置SSH密钥"
+        print_message "$YELLOW" "配置SSH密钥的方法:"
+        echo "1. 在本地生成密钥对: ssh-keygen -t ed25519"
+        echo "2. 复制公钥到服务器: ssh-copy-id root@服务器IP"
+        echo "3. 或手动添加公钥到 /root/.ssh/authorized_keys"
+        echo
+
+        if confirm_action "是否现在配置SSH密钥?"; then
+            setup_ssh_key_for_user "root"
+            if [[ -f "/root/.ssh/authorized_keys" && -s "/root/.ssh/authorized_keys" ]]; then
+                ssh_key_configured=true
+            fi
+        fi
+    fi
+
+    if [[ "$ssh_key_configured" != true ]]; then
+        print_message "$RED" "警告: 未配置SSH密钥，但将禁用密码认证"
+        print_message "$YELLOW" "这可能导致无法通过SSH登录服务器"
+        if ! confirm_action "确认继续? (建议先配置SSH密钥)"; then
+            return 1
+        fi
     fi
     
     # 测试SSH配置
     print_message "$YELLOW" "测试SSH配置语法..."
     if sshd -t; then
         print_message "$GREEN" "SSH配置语法正确"
+
+        # 显示有效配置
+        print_message "$YELLOW" "当前有效SSH配置:"
+        echo "端口: $(sshd -T | grep -i "^port" | awk '{print $2}')"
+        echo "Root登录: $(sshd -T | grep -i "^permitrootlogin" | awk '{print $2}')"
+        echo "密码认证: $(sshd -T | grep -i "^passwordauthentication" | awk '{print $2}')"
+        echo "密钥认证: $(sshd -T | grep -i "^pubkeyauthentication" | awk '{print $2}')"
+        echo
     else
         print_message "$RED" "SSH配置语法错误，请检查配置"
         return 1
@@ -933,8 +1079,11 @@ security_validation() {
     # SSH配置验证
     print_message "$YELLOW" "1. SSH配置验证"
 
+    # 使用sshd -T检查有效SSH配置
+    print_message "$YELLOW" "使用sshd -T检查有效配置..."
+
     # 检查SSH端口
-    ssh_port=$(grep "^Port" /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')
+    ssh_port=$(sshd -T 2>/dev/null | grep -i "^port" | awk '{print $2}')
     if [[ -n "$ssh_port" && "$ssh_port" != "22" ]]; then
         print_message "$GREEN" "✓ SSH端口已修改: $ssh_port"
     else
@@ -942,20 +1091,28 @@ security_validation() {
     fi
 
     # 检查root登录配置
-    root_login=$(grep "^PermitRootLogin" /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')
-    if [[ "$root_login" == "no" || "$root_login" == "prohibit-password" ]]; then
+    root_login=$(sshd -T 2>/dev/null | grep -i "^permitrootlogin" | awk '{print $2}')
+    if [[ "$root_login" == "no" || "$root_login" == "prohibit-password" || "$root_login" == "without-password" ]]; then
         print_message "$GREEN" "✓ Root登录已限制: $root_login"
     else
-        print_message "$RED" "✗ Root登录未限制"
+        print_message "$RED" "✗ Root登录未限制: $root_login"
         validation_passed=false
     fi
 
     # 检查密码认证
-    password_auth=$(grep "^PasswordAuthentication" /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')
+    password_auth=$(sshd -T 2>/dev/null | grep -i "^passwordauthentication" | awk '{print $2}')
     if [[ "$password_auth" == "no" ]]; then
         print_message "$GREEN" "✓ 密码认证已禁用"
     else
-        print_message "$YELLOW" "⚠ 密码认证仍启用"
+        print_message "$YELLOW" "⚠ 密码认证仍启用: $password_auth"
+    fi
+
+    # 检查密钥认证
+    pubkey_auth=$(sshd -T 2>/dev/null | grep -i "^pubkeyauthentication" | awk '{print $2}')
+    if [[ "$pubkey_auth" == "yes" ]]; then
+        print_message "$GREEN" "✓ 密钥认证已启用"
+    else
+        print_message "$YELLOW" "⚠ 密钥认证未启用: $pubkey_auth"
     fi
 
     # 检查SSH服务状态
