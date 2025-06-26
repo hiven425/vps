@@ -14,6 +14,18 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# 错误处理函数
+handle_error() {
+    local last_command=$1
+    local last_status=$2
+    print_message "$RED" "错误: 命令 '$last_command' 执行失败，状态码: $last_status"
+    log_message "错误: 命令 '$last_command' 执行失败，状态码: $last_status"
+}
+
+# 捕获错误（关闭自动退出，改为记录错误）
+set +e
+trap 'handle_error "${BASH_COMMAND}" "$?"' ERR
+
 # 日志文件
 LOG_FILE="/var/log/security-hardening.log"
 
@@ -159,6 +171,33 @@ create_user() {
         usermod -aG sudo "$username"
 
         log_message "创建用户 $username 并添加到sudo组"
+        
+        # 选择sudo权限级别
+        print_message "$YELLOW" "配置sudo权限级别:"
+        echo "1. 标准sudo权限 (执行sudo命令需要密码, 推荐)"
+        echo "2. 无密码sudo权限 (执行sudo命令不需要密码, 不推荐, 存在安全风险)"
+        
+        read -p "请选择 (1-2，默认1): " sudo_level
+        sudo_level=${sudo_level:-1}
+        
+        if [[ "$sudo_level" == "1" ]]; then
+            # 标准sudo权限 - 需要密码
+            echo "$username ALL=(ALL:ALL) ALL" > /etc/sudoers.d/"$username"
+            print_message "$GREEN" "已配置标准sudo权限 (需要密码)"
+        else
+            # 无密码sudo权限 - 存在安全风险
+            print_message "$RED" "警告: 无密码sudo权限存在潜在安全风险"
+            if confirm_action "确定要配置无密码sudo权限吗？"; then
+                echo "$username ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/"$username"
+                print_message "$YELLOW" "已配置无密码sudo权限 (存在安全风险)"
+            else
+                echo "$username ALL=(ALL:ALL) ALL" > /etc/sudoers.d/"$username"
+                print_message "$GREEN" "已配置标准sudo权限 (需要密码)"
+            fi
+        fi
+        
+        chmod 440 /etc/sudoers.d/"$username"
+        log_message "已配置 $username 的sudo权限"
 
         # 设置SSH目录
         user_home="/home/$username"
@@ -448,14 +487,153 @@ configure_firewall() {
         ufw default deny incoming
         ufw default allow outgoing
 
-        # 允许SSH (获取当前SSH端口)
-        ssh_port=$(grep "^Port" /etc/ssh/sshd_config | awk '{print $2}' || echo "22")
-        ufw allow "$ssh_port"/tcp comment 'SSH'
+        # 允许SSH (获取当前SSH端口并验证有效性)
+        ssh_port=$(grep "^Port" /etc/ssh/sshd_config | awk '{print $2}' 2>/dev/null)
+        # 确保端口是有效数字，否则使用默认端口22
+        if [[ -z "$ssh_port" ]] || ! [[ "$ssh_port" =~ ^[0-9]+$ ]] || [[ "$ssh_port" -lt 1 ]] || [[ "$ssh_port" -gt 65535 ]]; then
+            print_message "$YELLOW" "警告: 检测到无效的SSH端口配置，使用默认端口22"
+            ssh_port=22
+        fi
 
-        # 允许HTTP和HTTPS
-        if confirm_action "是否允许HTTP(80)和HTTPS(443)端口?"; then
-            ufw allow 80/tcp comment 'HTTP'
-            ufw allow 443/tcp comment 'HTTPS'
+        ufw allow "$ssh_port"/tcp comment 'SSH'
+        print_message "$GREEN" "已允许SSH端口 $ssh_port/tcp"
+
+        # 检测Web服务
+        local web_server_installed=false
+        if systemctl is-active --quiet nginx || systemctl is-active --quiet apache2; then
+            web_server_installed=true
+            print_message "$YELLOW" "检测到Web服务器正在运行"
+        fi
+
+        # 根据检测结果推荐操作
+        if [[ "$web_server_installed" == true ]]; then
+            # Web服务器已安装，建议开启HTTP/HTTPS
+            if confirm_action "检测到Web服务器，建议开启HTTP(80)和HTTPS(443)端口，是否开启?"; then
+                ufw allow 80/tcp comment 'HTTP'
+                ufw allow 443/tcp comment 'HTTPS'
+                log_message "已开启HTTP和HTTPS端口"
+            fi
+        else
+            # Web服务器未安装，提供警告
+            print_message "$YELLOW" "未检测到Web服务器"
+            if confirm_action "没有运行中的Web服务器，是否仍要开启HTTP(80)和HTTPS(443)端口? (不建议)"; then
+                print_message "$RED" "警告: 开启未使用的端口可能增加安全风险"
+                if confirm_action "确认开启HTTP和HTTPS端口?"; then
+                    ufw allow 80/tcp comment 'HTTP'
+                    ufw allow 443/tcp comment 'HTTPS'
+                    log_message "已开启HTTP和HTTPS端口 (尽管未检测到Web服务)"
+                fi
+            fi
+        fi
+
+        # 检测常见服务
+        print_message "$YELLOW" "检测其他常见服务..."
+        local detected_services=()
+        
+        # 检查常见服务是否正在运行
+        if systemctl is-active --quiet mysql; then
+            detected_services+=("MySQL(3306/tcp)")
+        fi
+        
+        if systemctl is-active --quiet postgresql; then
+            detected_services+=("PostgreSQL(5432/tcp)")
+        fi
+        
+        if systemctl is-active --quiet redis-server; then
+            detected_services+=("Redis(6379/tcp)")
+        fi
+        
+        if systemctl is-active --quiet docker; then
+            detected_services+=("Docker(可能需要额外端口)")
+        fi
+        
+        # 检查是否运行了特定端口上的服务
+        local listening_ports=$(ss -tuln | grep LISTEN | awk '{print $5}' | cut -d: -f2 | sort -n | uniq)
+        local common_ports=(3000 3306 5432 6379 8080 8443 27017)
+        local detected_port_services=()
+        
+        for port in $listening_ports; do
+            case $port in
+                3000)
+                    detected_port_services+=("NodeJS/服务(3000/tcp)")
+                    ;;
+                8080)
+                    detected_port_services+=("Web服务(8080/tcp)")
+                    ;;
+                8443)
+                    detected_port_services+=("Web服务(8443/tcp)")
+                    ;;
+                27017)
+                    detected_port_services+=("MongoDB(27017/tcp)")
+                    ;;
+            esac
+        done
+        
+        # 将检测到的端口服务添加到列表
+        if [[ ${#detected_port_services[@]} -gt 0 ]]; then
+            for service in "${detected_port_services[@]}"; do
+                detected_services+=("$service")
+            done
+        fi
+        
+        # 如果检测到服务，询问是否开放相关端口
+        if [[ ${#detected_services[@]} -gt 0 ]]; then
+            print_message "$YELLOW" "检测到以下服务可能需要网络访问:"
+            for service in "${detected_services[@]}"; do
+                echo "- $service"
+            done
+            
+            if confirm_action "是否为检测到的服务配置防火墙规则?"; then
+                if systemctl is-active --quiet mysql; then
+                    if confirm_action "允许MySQL端口(3306/tcp)? (仅当需要远程访问时)"; then
+                        ufw allow 3306/tcp comment 'MySQL'
+                        log_message "已开启MySQL端口"
+                    fi
+                fi
+                
+                if systemctl is-active --quiet postgresql; then
+                    if confirm_action "允许PostgreSQL端口(5432/tcp)? (仅当需要远程访问时)"; then
+                        ufw allow 5432/tcp comment 'PostgreSQL'
+                        log_message "已开启PostgreSQL端口"
+                    fi
+                fi
+                
+                if systemctl is-active --quiet redis-server; then
+                    if confirm_action "允许Redis端口(6379/tcp)? (仅当需要远程访问时)"; then
+                        ufw allow 6379/tcp comment 'Redis'
+                        log_message "已开启Redis端口"
+                    fi
+                fi
+                
+                if systemctl is-active --quiet docker; then
+                    print_message "$YELLOW" "Docker可能需要多个端口，请在稍后手动添加"
+                fi
+                
+                # 处理检测到的端口服务
+                for service in "${detected_port_services[@]}"; do
+                    if [[ "$service" == *"(3000/tcp)"* ]]; then
+                        if confirm_action "允许NodeJS/服务端口(3000/tcp)?"; then
+                            ufw allow 3000/tcp comment 'NodeJS'
+                            log_message "已开启NodeJS端口"
+                        fi
+                    elif [[ "$service" == *"(8080/tcp)"* ]]; then
+                        if confirm_action "允许Web服务端口(8080/tcp)?"; then
+                            ufw allow 8080/tcp comment 'Web'
+                            log_message "已开启8080端口"
+                        fi
+                    elif [[ "$service" == *"(8443/tcp)"* ]]; then
+                        if confirm_action "允许Web服务端口(8443/tcp)?"; then
+                            ufw allow 8443/tcp comment 'Web'
+                            log_message "已开启8443端口"
+                        fi
+                    elif [[ "$service" == *"(27017/tcp)"* ]]; then
+                        if confirm_action "允许MongoDB端口(27017/tcp)? (仅当需要远程访问时)"; then
+                            ufw allow 27017/tcp comment 'MongoDB'
+                            log_message "已开启MongoDB端口"
+                        fi
+                    fi
+                done
+            fi
         fi
 
         # 自定义端口
@@ -469,12 +647,16 @@ configure_firewall() {
 
         # 启用防火墙
         if confirm_action "是否启用防火墙?"; then
-            ufw --force enable
-            log_message "防火墙已启用"
+            print_message "$RED" "警告: 启用防火墙可能会断开现有连接"
+            print_message "$YELLOW" "确保已允许SSH端口 ($ssh_port/tcp)"
+            if confirm_action "确认启用防火墙?"; then
+                ufw --force enable
+                log_message "防火墙已启用"
 
-            # 显示防火墙状态
-            print_message "$GREEN" "防火墙规则:"
-            ufw status numbered
+                # 显示防火墙状态
+                print_message "$GREEN" "防火墙规则:"
+                ufw status numbered
+            fi
         fi
     fi
 }
@@ -493,7 +675,30 @@ install_fail2ban() {
     fi
 
     if confirm_action "是否配置fail2ban规则?"; then
+        # 备份现有配置
         backup_file "/etc/fail2ban/jail.local"
+        
+        # 检查jail.local是否存在，如果存在且包含[sshd]段，提示用户
+        if [[ -f "/etc/fail2ban/jail.local" ]] && grep -q "\[sshd\]" "/etc/fail2ban/jail.local"; then
+            print_message "$YELLOW" "检测到现有fail2ban配置，包含[sshd]段"
+            if confirm_action "是否覆盖现有配置?"; then
+                log_message "覆盖现有fail2ban配置"
+            else
+                print_message "$YELLOW" "将保留现有配置，仅更新端口和启用状态"
+                # 更新ssh端口配置
+                ssh_port=$(grep "^Port" /etc/ssh/sshd_config | awk '{print $2}' || echo "22")
+                sed -i "s/^port = .*/port = $ssh_port/" "/etc/fail2ban/jail.local"
+                # 确保sshd jail启用
+                sed -i "s/^enabled = false/enabled = true/" "/etc/fail2ban/jail.local"
+                
+                log_message "更新fail2ban SSH端口配置为: $ssh_port"
+                
+                # 重启fail2ban服务
+                systemctl restart fail2ban
+                print_message "$GREEN" "fail2ban服务已重启，配置已更新"
+                return 0
+            fi
+        fi
 
         # 获取SSH端口
         ssh_port=$(grep "^Port" /etc/ssh/sshd_config | awk '{print $2}' || echo "22")
@@ -542,16 +747,18 @@ EOF
 
         log_message "配置fail2ban规则"
 
-        # 创建ufw-block过滤器
-        cat > /etc/fail2ban/filter.d/ufw-block.conf << 'EOF'
+        # 创建ufw-block过滤器 (检查是否存在)
+        if [[ ! -f "/etc/fail2ban/filter.d/ufw-block.conf" ]]; then
+            cat > /etc/fail2ban/filter.d/ufw-block.conf << 'EOF'
 [Definition]
 failregex = ^.*\[UFW BLOCK\].*SRC=<HOST>.*$
 ignoreregex =
 EOF
-        log_message "创建ufw-block过滤器"
+            log_message "创建ufw-block过滤器"
+        fi
 
         # 创建ufw action (如果不存在)
-        if [[ ! -f /etc/fail2ban/action.d/ufw.conf ]]; then
+        if [[ ! -f "/etc/fail2ban/action.d/ufw.conf" ]]; then
             cat > /etc/fail2ban/action.d/ufw.conf << 'EOF'
 [Definition]
 actionstart =
@@ -563,20 +770,58 @@ EOF
             log_message "创建ufw action配置"
         fi
 
-        # 启动fail2ban
+        # 验证fail2ban配置
+        print_message "$YELLOW" "验证fail2ban配置..."
+        if ! fail2ban-client -t &>/dev/null; then
+            print_message "$RED" "fail2ban配置验证失败，请检查配置"
+            return 1
+        fi
+
+        # 启动fail2ban服务
+        print_message "$YELLOW" "启动fail2ban服务..."
         systemctl enable fail2ban
         systemctl restart fail2ban
         log_message "启动fail2ban服务"
 
-        # 等待服务启动
-        sleep 3
+        # 等待fail2ban服务完全初始化
+        print_message "$YELLOW" "等待fail2ban服务初始化..."
+        for i in {1..10}; do
+            if systemctl is-active --quiet fail2ban; then
+                sleep 2  # 即使服务active，也多等待一下socket文件准备
+                break
+            fi
+            echo -n "."
+            sleep 1
+        done
+        echo
 
-        print_message "$GREEN" "fail2ban状态:"
-        fail2ban-client status
+        # 检查服务状态
+        if ! systemctl is-active --quiet fail2ban; then
+            print_message "$RED" "fail2ban服务未能成功启动"
+            journalctl -u fail2ban --no-pager -l | tail -20
+            return 1
+        fi
+
+        # 使用系统服务状态检查
+        print_message "$GREEN" "fail2ban服务状态:"
+        systemctl status fail2ban --no-pager -l | head -10
+
+        # 等待额外时间确保socket文件就绪
+        sleep 5
+
+        # 尝试获取fail2ban详细状态
+        print_message "$YELLOW" "尝试获取fail2ban详细状态..."
+        if fail2ban-client status &>/dev/null; then
+            print_message "$GREEN" "fail2ban运行正常，已激活的防护:"
+            fail2ban-client status | grep "Jail list" | sed 's/.*Jail list:/Jail list:/'
+        else
+            print_message "$YELLOW" "fail2ban-client命令暂时无法使用，但服务已启动"
+            print_message "$YELLOW" "请稍后使用 'fail2ban-client status' 手动检查详细状态"
+        fi
 
         print_message "$YELLOW" "fail2ban配置说明:"
         echo "- SSH保护: 3次失败后封禁1小时"
-        echo "- UFW阻止: 5次触发后永久封禁"
+        echo "- UFW阻止: 5次触发后封禁1天"
         echo "- 查看状态: fail2ban-client status"
         echo "- 解封IP: fail2ban-client set jail名 unbanip IP地址"
     fi
@@ -587,12 +832,23 @@ configure_network_security() {
     print_message "$BLUE" "=== 网络安全配置 ==="
 
     if confirm_action "是否配置网络安全参数?"; then
+        # 备份原始配置
         backup_file "/etc/sysctl.conf"
+        
+        # 创建独立配置文件
+        local sysctl_security_conf="/etc/sysctl.d/99-security-hardening.conf"
+        
+        # 删除旧的安全配置文件(如果存在)
+        if [[ -f "$sysctl_security_conf" ]]; then
+            mv "$sysctl_security_conf" "$BACKUP_DIR/" 2>/dev/null
+            log_message "备份旧的网络安全配置"
+        fi
 
-        # 网络安全参数
-        cat >> /etc/sysctl.conf << EOF
+        # 网络安全参数写入独立配置文件
+        cat > "$sysctl_security_conf" << EOF
+# 网络安全配置 - 由安全加固脚本创建
+# 创建时间: $(date)
 
-# 网络安全配置
 # 禁用IP转发
 net.ipv4.ip_forward = 0
 net.ipv6.conf.all.forwarding = 0
@@ -625,8 +881,9 @@ net.ipv4.conf.all.log_martians = 1
 EOF
 
         # 应用配置
-        sysctl -p
+        sysctl -p "$sysctl_security_conf"
         log_message "应用网络安全配置"
+        print_message "$GREEN" "网络安全参数已配置到: $sysctl_security_conf"
     fi
 
     # 禁用不必要的服务
