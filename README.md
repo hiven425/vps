@@ -119,31 +119,33 @@ chmod +x security-hardening.sh
 
 ## 文档说明
 
-- `fail2ban完整指南.md` - fail2ban 的完整配置和故障排除指南
-- `VPS安全加固说明.md` - 详细的安全加固功能说明
+- `fail2ban完整指南.md` - **主要文档**，包含完整的使用指南、配置说明和故障排除
+- `VPS安全加固说明.md` - 安全加固功能详细说明
+- `SSH配置最佳实践.md` - SSH 安全配置指南
 - `vless+reality配置指南.md` - 代理服务配置指南
 
 ## 故障排除
 
-### fail2ban Socket 连接问题
-如果遇到 `Failed to access socket path: /var/run/fail2ban/fail2ban.sock` 错误：
+### 常见问题
+1. **fail2ban Socket 连接问题**: 使用脚本诊断功能 (选项 12 → 7)
+2. **SSH端口检测错误**: 脚本已自动修复，支持多种检测方法
+3. **配置验证失败**: 脚本会自动降级到可用配置
+4. **证书申请失败**: 检查 Cloudflare 配置和网络连接
 
-1. 使用脚本的自动诊断功能 (选项 12 → 7)
-2. 手动检查：`systemctl status fail2ban`
-3. 重启服务：`systemctl restart fail2ban`
-4. 等待 30-60 秒让服务完全启动
+### 快速修复
+```bash
+# 重启相关服务
+systemctl restart fail2ban
+systemctl restart nginx
 
-### 证书申请失败
-1. 检查 Cloudflare API Token 权限
-2. 确认域名已在 Cloudflare 托管
-3. 验证 Zone ID 和 Account ID 正确性
+# 查看服务状态
+systemctl status 服务名
 
-### 服务启动失败
-1. 检查端口是否被占用：`netstat -tlnp`
-2. 查看服务日志：`journalctl -u 服务名 -n 20`
-3. 确认防火墙规则：`ufw status`
+# 查看日志
+journalctl -u 服务名 -n 20
+```
 
-详细说明请参考相关文档文件。
+**详细说明请参考 `fail2ban完整指南.md`**
 
 ## 更新日志
 
