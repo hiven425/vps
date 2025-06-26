@@ -95,6 +95,29 @@ backup_file() {
     fi
 }
 
+# 等待fail2ban socket文件创建
+wait_for_fail2ban_socket() {
+    local max_wait=${1:-30}
+    local message=${2:-"等待fail2ban socket文件创建..."}
+
+    print_message "$YELLOW" "$message"
+    for i in $(seq 1 $max_wait); do
+        if [[ -S "/var/run/fail2ban/fail2ban.sock" ]]; then
+            print_message "$GREEN" "✓ Socket文件已创建"
+            return 0
+        fi
+        sleep 1
+        if (( i % 5 == 0 )); then
+            echo -n "$i/$max_wait秒 "
+        else
+            echo -n "."
+        fi
+    done
+    echo
+    print_message "$YELLOW" "Socket文件创建超时"
+    return 1
+}
+
 # 系统信息显示
 show_system_info() {
     print_message "$BLUE" "=== 系统信息 ==="
@@ -880,6 +903,12 @@ EOF
         echo "- UFW阻止: 5次触发后封禁1天"
         echo "- 查看状态: fail2ban-client status"
         echo "- 解封IP: fail2ban-client set jail名 unbanip IP地址"
+        echo "- 管理工具: 选择菜单选项 '12. fail2ban管理'"
+        echo
+        print_message "$YELLOW" "故障排除提示:"
+        echo "- 如果遇到socket连接问题，请使用管理菜单中的'诊断和修复问题'选项"
+        echo "- 服务启动可能需要30-60秒，请耐心等待"
+        echo "- 配置文件位置: /etc/fail2ban/jail.local"
     fi
 }
 
@@ -1280,6 +1309,497 @@ EOF
     ls -la /root/ | grep -E "(backup|security-backup)" || echo "未找到备份目录"
 }
 
+# 安装acme.sh并申请证书
+install_acme_and_request_cert() {
+    local domain=$1
+    local email=$2
+    local cf_token=$3
+    local cf_zone_id=$4
+    local cf_account_id=$5
+    local key_type=${6:-"ec-256"}
+
+    print_message "$YELLOW" "开始申请TLS证书（密钥类型: $key_type）..."
+
+    # 安装acme.sh
+    if [[ ! -f ~/.acme.sh/acme.sh ]]; then
+        print_message "$YELLOW" "安装acme.sh..."
+        curl https://get.acme.sh | sh -s email="$email"
+        apt install socat -y
+        ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+        source ~/.bashrc
+        ~/.acme.sh/acme.sh --upgrade --auto-upgrade
+    else
+        print_message "$GREEN" "acme.sh 已安装"
+    fi
+
+    # 设置环境变量
+    export CF_Token="$cf_token"
+    export CF_Zone_ID="$cf_zone_id"
+    export CF_Account_ID="$cf_account_id"
+
+    # 获取非root用户
+    local username=$(getent passwd 1001 | cut -d: -f1)
+    if [[ -z "$username" ]]; then
+        username="vpsuser"
+        print_message "$YELLOW" "未找到UID 1001的用户，使用默认用户名: $username"
+    fi
+
+    print_message "$YELLOW" "申请证书: $domain（密钥类型: $key_type）"
+
+    # 检查证书是否已经存在且有效
+    if [[ -f "/home/$username/$domain.cer" ]] && [[ -f "/home/$username/$domain.key" ]]; then
+        if openssl x509 -in "/home/$username/$domain.cer" -noout -checkend 2592000 > /dev/null 2>&1; then
+            print_message "$GREEN" "证书已存在且有效期超过30天，跳过申请"
+            return 0
+        else
+            print_message "$YELLOW" "证书已存在但即将过期或无效，重新申请"
+        fi
+    fi
+
+    # 申请证书
+    ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$domain" -d "*.$domain" \
+        --keylength "$key_type" \
+        --key-file "/home/$username/$domain.key" \
+        --fullchain-file "/home/$username/$domain.cer" \
+        --reloadcmd 'bash -c "nginx -s reload 2>/dev/null || true; x-ui restart 2>/dev/null || true"'
+
+    if [[ $? -eq 0 ]]; then
+        # 修改权限
+        print_message "$YELLOW" "修改证书权限..."
+        chmod 644 "/home/$username/$domain.key"
+        chmod 644 "/home/$username/$domain.cer"
+
+        # 创建证书目录并复制
+        mkdir -p "/root/cert/$domain"
+        cp "/home/$username/$domain.cer" "/root/cert/$domain/fullchain.pem"
+        cp "/home/$username/$domain.key" "/root/cert/$domain/privkey.pem"
+
+        # 验证证书
+        print_message "$YELLOW" "验证证书..."
+        if openssl x509 -in "/home/$username/$domain.cer" -noout -text > /dev/null 2>&1; then
+            print_message "$GREEN" "证书申请成功"
+
+            # 显示证书信息
+            print_message "$YELLOW" "证书有效期："
+            openssl x509 -in "/home/$username/$domain.cer" -noout -dates
+
+            print_message "$YELLOW" "证书包含的域名："
+            openssl x509 -in "/home/$username/$domain.cer" -noout -text | grep -A1 "Subject Alternative Name" || echo "  $domain, *.$domain"
+
+            log_message "证书申请成功: $domain"
+        else
+            print_message "$RED" "证书文件可能有问题，请检查"
+            return 1
+        fi
+    else
+        print_message "$RED" "证书申请失败"
+        return 1
+    fi
+}
+
+# 证书管理 (Cloudflare)
+manage_certificates() {
+    print_message "$BLUE" "=== 证书管理 (Cloudflare) ==="
+
+    while true; do
+        echo
+        print_message "$YELLOW" "证书管理选项:"
+        echo "1. 申请新证书"
+        echo "2. 查看现有证书"
+        echo "3. 续期证书"
+        echo "4. 删除证书"
+        echo "0. 返回主菜单"
+        echo
+
+        read -p "请选择操作 (0-4): " cert_choice
+
+        case $cert_choice in
+            1)
+                print_message "$YELLOW" "申请新证书"
+                read -p "请输入域名: " domain
+                read -p "请输入邮箱: " email
+                read -p "请输入Cloudflare API Token: " cf_token
+                read -p "请输入Cloudflare Zone ID: " cf_zone_id
+                read -p "请输入Cloudflare Account ID: " cf_account_id
+
+                if [[ -n "$domain" && -n "$email" && -n "$cf_token" && -n "$cf_zone_id" && -n "$cf_account_id" ]]; then
+                    install_acme_and_request_cert "$domain" "$email" "$cf_token" "$cf_zone_id" "$cf_account_id"
+                else
+                    print_message "$RED" "所有参数都是必需的"
+                fi
+                ;;
+            2)
+                print_message "$YELLOW" "查看现有证书:"
+                if command -v ~/.acme.sh/acme.sh &> /dev/null; then
+                    ~/.acme.sh/acme.sh --list
+                else
+                    print_message "$YELLOW" "acme.sh 未安装"
+                fi
+                ;;
+            3)
+                print_message "$YELLOW" "续期证书"
+                if command -v ~/.acme.sh/acme.sh &> /dev/null; then
+                    ~/.acme.sh/acme.sh --renew-all
+                else
+                    print_message "$RED" "acme.sh 未安装"
+                fi
+                ;;
+            4)
+                print_message "$YELLOW" "删除证书"
+                read -p "请输入要删除的域名: " domain
+                if [[ -n "$domain" ]] && command -v ~/.acme.sh/acme.sh &> /dev/null; then
+                    ~/.acme.sh/acme.sh --remove -d "$domain"
+                else
+                    print_message "$RED" "域名不能为空或acme.sh未安装"
+                fi
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_message "$RED" "无效选择"
+                ;;
+        esac
+
+        echo
+        read -p "按回车键继续..." -r
+    done
+}
+
+# Hysteria2服务安装
+install_hysteria2() {
+    print_message "$BLUE" "=== Hysteria2服务安装 ==="
+
+    read -p "请输入域名: " domain
+    read -p "请输入端口 (默认8443): " port
+    read -p "请输入用户名: " username
+    read -p "请输入密码: " password
+
+    port=${port:-8443}
+
+    if [[ -z "$domain" || -z "$username" || -z "$password" ]]; then
+        print_message "$RED" "域名、用户名和密码都是必需的"
+        return 1
+    fi
+
+    print_message "$YELLOW" "开始安装Hysteria2服务..."
+
+    # 安装Hysteria2
+    print_message "$YELLOW" "安装Hysteria2..."
+    bash <(curl -fsSL https://get.hy2.sh/)
+
+    # 获取非root用户
+    local vps_username=$(getent passwd 1001 | cut -d: -f1)
+    if [[ -z "$vps_username" ]]; then
+        vps_username="vpsuser"
+    fi
+
+    # 配置Hysteria2
+    print_message "$YELLOW" "配置Hysteria2..."
+    cat > /etc/hysteria/config.yaml << EOF
+listen: :$port
+
+tls:
+  cert: /home/$vps_username/$domain.cer
+  key: /home/$vps_username/$domain.key
+
+auth:
+  type: userpass
+  userpass:
+    $username: $password
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://bing.com
+    rewriteHost: true
+  listenHTTP: :80
+  listenHTTPS: :$port
+
+bandwidth:
+  up: 20 mbps
+  down: 50 mbps
+EOF
+
+    # 开放端口
+    print_message "$YELLOW" "配置防火墙..."
+    ufw allow $port
+
+    # 启动服务
+    print_message "$YELLOW" "启动Hysteria2服务..."
+    systemctl enable hysteria-server.service --now
+
+    if systemctl is-active --quiet hysteria-server; then
+        print_message "$GREEN" "Hysteria2服务安装完成"
+        print_message "$YELLOW" "配置信息:"
+        echo "- 域名: $domain"
+        echo "- 端口: $port"
+        echo "- 用户名: $username"
+        echo "- 密码: $password"
+        log_message "Hysteria2服务安装完成: $domain:$port"
+    else
+        print_message "$RED" "Hysteria2服务启动失败"
+        systemctl status hysteria-server --no-pager -l | head -10
+    fi
+}
+
+# X-UI面板安装
+install_xui() {
+    print_message "$BLUE" "=== X-UI面板安装 ==="
+
+    if confirm_action "是否安装3X-UI面板?"; then
+        print_message "$YELLOW" "开始安装3X-UI面板..."
+
+        # 安装X-UI
+        print_message "$YELLOW" "下载并安装3X-UI..."
+        bash <(curl -Ls https://raw.githubusercontent.com/MHSanaei/3x-ui/refs/tags/v2.6.0/install.sh)
+
+        # 配置提示
+        print_message "$GREEN" "3X-UI面板安装完成"
+        print_message "$YELLOW" "配置提示:"
+        echo "1. 请手动配置3X-UI面板"
+        echo "2. 记录访问端口用于nginx反向代理"
+        echo "3. 配置SSL证书路径: /root/cert/域名/fullchain.pem 和 /root/cert/域名/privkey.pem"
+        echo "4. 或者使用3X-UI备份恢复功能"
+
+        if confirm_action "是否现在配置3X-UI?"; then
+            x-ui
+        fi
+
+        log_message "3X-UI面板安装完成"
+    fi
+}
+
+# Sub-Store服务安装
+install_substore() {
+    print_message "$BLUE" "=== Sub-Store服务安装 ==="
+
+    read -p "请输入API密钥: " api_key
+
+    if [[ -z "$api_key" ]]; then
+        print_message "$RED" "API密钥是必需的"
+        return 1
+    fi
+
+    print_message "$YELLOW" "开始安装Sub-Store服务..."
+
+    # 安装依赖
+    print_message "$YELLOW" "安装依赖..."
+    apt update -y && apt install unzip curl wget git -y
+
+    # 安装FNM
+    if [[ ! -f ~/.local/share/fnm/fnm ]]; then
+        print_message "$YELLOW" "安装FNM..."
+        curl -fsSL https://fnm.vercel.app/install | bash
+        source ~/.bashrc
+    fi
+
+    # 安装Node
+    print_message "$YELLOW" "安装Node..."
+    ~/.local/share/fnm/fnm install v20.18.0
+
+    # 安装PNPM
+    if ! command -v pnpm &> /dev/null; then
+        print_message "$YELLOW" "安装PNPM..."
+        curl -fsSL https://get.pnpm.io/install.sh | sh -
+        source ~/.bashrc
+    fi
+
+    # 创建目录
+    print_message "$YELLOW" "创建目录..."
+    mkdir -p /root/sub-store
+    cd /root/sub-store
+
+    # 下载Sub-Store
+    print_message "$YELLOW" "下载Sub-Store..."
+    curl -fsSL https://github.com/sub-store-org/Sub-Store/releases/latest/download/sub-store.bundle.js -o sub-store.bundle.js
+    curl -fsSL https://github.com/sub-store-org/Sub-Store-Front-End/releases/latest/download/dist.zip -o dist.zip
+    unzip -o dist.zip && mv dist frontend && rm dist.zip
+
+    # 创建服务
+    print_message "$YELLOW" "创建服务..."
+    cat > /etc/systemd/system/sub-store.service << EOF
+[Unit]
+Description=Sub-Store
+After=network-online.target
+Wants=network-online.target systemd-networkd-wait-online.service
+
+[Service]
+LimitNOFILE=32767
+Type=simple
+Environment="SUB_STORE_FRONTEND_BACKEND_PATH=/$api_key"
+Environment="SUB_STORE_BACKEND_CRON=0 0 * * *"
+Environment="SUB_STORE_FRONTEND_PATH=/root/sub-store/frontend"
+Environment="SUB_STORE_FRONTEND_HOST=0.0.0.0"
+Environment="SUB_STORE_FRONTEND_PORT=3001"
+Environment="SUB_STORE_DATA_BASE_PATH=/root/sub-store"
+Environment="SUB_STORE_BACKEND_API_HOST=127.0.0.1"
+Environment="SUB_STORE_BACKEND_API_PORT=3000"
+ExecStart=/root/.local/share/fnm/fnm exec --using v20.18.0 node /root/sub-store/sub-store.bundle.js
+User=root
+Group=root
+Restart=on-failure
+RestartSec=5s
+ExecStartPre=/bin/sh -c ulimit -n 51200
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # 启动服务
+    print_message "$YELLOW" "启动服务..."
+    systemctl daemon-reload
+    systemctl enable sub-store.service --now
+
+    if systemctl is-active --quiet sub-store; then
+        print_message "$GREEN" "Sub-Store服务安装完成"
+        print_message "$YELLOW" "访问信息:"
+        echo "- 前端端口: 3001"
+        echo "- 后端端口: 3000"
+        echo "- API路径: /$api_key"
+        log_message "Sub-Store服务安装完成"
+    else
+        print_message "$RED" "Sub-Store服务启动失败"
+        systemctl status sub-store --no-pager -l | head -10
+    fi
+}
+
+# Nginx分流配置
+configure_nginx() {
+    print_message "$BLUE" "=== Nginx分流配置 ==="
+
+    read -p "请输入主域名: " domain
+    read -p "请输入X-UI域名: " xui_domain
+    read -p "请输入Sub-Store域名: " substore_domain
+    read -p "请输入X-UI访问端口: " port_xui
+
+    if [[ -z "$domain" || -z "$xui_domain" || -z "$substore_domain" || -z "$port_xui" ]]; then
+        print_message "$RED" "所有参数都是必需的"
+        return 1
+    fi
+
+    print_message "$YELLOW" "开始配置Nginx分流..."
+
+    # 安装Nginx
+    if ! command -v nginx &> /dev/null; then
+        print_message "$YELLOW" "安装Nginx..."
+        apt install libnginx-mod-stream nginx -y
+    else
+        print_message "$GREEN" "Nginx已安装"
+    fi
+
+    # 获取非root用户
+    local username=$(getent passwd 1001 | cut -d: -f1)
+    if [[ -z "$username" ]]; then
+        username="vpsuser"
+    fi
+
+    # 修改主配置文件
+    if ! grep -q "include /etc/nginx/vps.conf;" /etc/nginx/nginx.conf; then
+        print_message "$YELLOW" "添加vps.conf包含语句到nginx.conf"
+        echo "    include /etc/nginx/vps.conf;" >> /etc/nginx/nginx.conf
+    else
+        print_message "$GREEN" "vps.conf包含语句已存在"
+    fi
+
+    # 创建分流配置
+    print_message "$YELLOW" "创建分流配置..."
+    cat > /etc/nginx/vps.conf << EOF
+# /etc/nginx/vps.conf
+
+stream {
+    # 定义一个映射，将 SNI 中的服务器名映射到后端标识符
+    map \$ssl_preread_server_name \$backend {
+        hostnames;
+        $substore_domain sub;
+        $xui_domain xui;
+        default hysteria;  # 默认后端
+    }
+
+    # 定义各个后端的上游服务器
+    upstream sub {
+        server 127.0.0.1:8444;  # $substore_domain 对应的后端
+    }
+
+    upstream xui {
+        server 127.0.0.1:$port_xui;  # $xui_domain 对应的后端
+    }
+
+    upstream hysteria {
+        server 127.0.0.1:8443;  # 默认后端
+    }
+
+    # 定义一个服务器块，监听指定端口并根据 SNI 分发流量
+    server {
+        listen 443;
+        listen [::]:443;
+        proxy_pass \${backend};
+        ssl_preread on;
+    }
+}
+EOF
+
+    # 创建Sub-Store的nginx配置
+    print_message "$YELLOW" "创建Sub-Store nginx配置..."
+    cat > /etc/nginx/sites-available/sub-store << EOF
+server {
+    listen 8444 ssl http2;
+    server_name $substore_domain;
+
+    ssl_certificate /home/$username/$domain.cer;
+    ssl_certificate_key /home/$username/$domain.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+
+    location / {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location /$api_key {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+
+    # 启用站点
+    ln -sf /etc/nginx/sites-available/sub-store /etc/nginx/sites-enabled/
+
+    # 测试配置
+    print_message "$YELLOW" "测试Nginx配置..."
+    if nginx -t; then
+        print_message "$GREEN" "Nginx配置测试通过"
+
+        # 重启Nginx
+        systemctl restart nginx
+        if systemctl is-active --quiet nginx; then
+            print_message "$GREEN" "Nginx分流配置完成"
+            print_message "$YELLOW" "配置信息:"
+            echo "- 主域名: $domain"
+            echo "- X-UI域名: $xui_domain (端口: $port_xui)"
+            echo "- Sub-Store域名: $substore_domain"
+            echo "- 监听端口: 443"
+            log_message "Nginx分流配置完成"
+        else
+            print_message "$RED" "Nginx启动失败"
+            systemctl status nginx --no-pager -l | head -10
+        fi
+    else
+        print_message "$RED" "Nginx配置测试失败"
+        nginx -t
+    fi
+}
+
 # fail2ban管理
 manage_fail2ban() {
     print_message "$BLUE" "=== fail2ban管理 ==="
@@ -1298,51 +1818,117 @@ manage_fail2ban() {
         echo "4. 查看日志"
         echo "5. 重启fail2ban服务"
         echo "6. 测试配置"
+        echo "7. 诊断和修复问题"
         echo "0. 返回主菜单"
         echo
 
-        read -p "请选择操作 (0-6): " f2b_choice
+        read -p "请选择操作 (0-7): " f2b_choice
 
         case $f2b_choice in
             1)
                 print_message "$YELLOW" "fail2ban总体状态:"
-                fail2ban-client status
-                echo
-                print_message "$YELLOW" "各jail详细状态:"
-                for jail in $(fail2ban-client status | grep "Jail list:" | cut -d: -f2 | tr ',' ' '); do
-                    jail=$(echo $jail | xargs)  # 去除空格
-                    if [[ -n "$jail" ]]; then
-                        echo "--- $jail ---"
-                        fail2ban-client status "$jail"
-                        echo
+
+                # 首先检查服务是否运行
+                if ! systemctl is-active --quiet fail2ban; then
+                    print_message "$RED" "fail2ban服务未运行"
+                    print_message "$YELLOW" "服务状态:"
+                    systemctl status fail2ban --no-pager -l | head -10
+                    echo
+                    print_message "$YELLOW" "尝试启动服务..."
+                    if systemctl start fail2ban; then
+                        print_message "$GREEN" "服务启动成功"
+                        sleep 3  # 等待服务完全启动
+                    else
+                        print_message "$RED" "服务启动失败"
+                        print_message "$YELLOW" "错误日志:"
+                        journalctl -u fail2ban --no-pager -n 10
+                        continue
                     fi
-                done
+                fi
+
+                # 检查socket文件是否存在
+                if [[ ! -S "/var/run/fail2ban/fail2ban.sock" ]]; then
+                    wait_for_fail2ban_socket 30
+                fi
+
+                # 尝试获取状态
+                if fail2ban-client status &>/dev/null; then
+                    fail2ban-client status
+                    echo
+                    print_message "$YELLOW" "各jail详细状态:"
+                    for jail in $(fail2ban-client status | grep "Jail list:" | cut -d: -f2 | tr ',' ' '); do
+                        jail=$(echo $jail | xargs)  # 去除空格
+                        if [[ -n "$jail" ]]; then
+                            echo "--- $jail ---"
+                            fail2ban-client status "$jail"
+                            echo
+                        fi
+                    done
+                else
+                    print_message "$RED" "无法连接到fail2ban服务"
+                    print_message "$YELLOW" "请检查服务状态和配置文件"
+                fi
                 ;;
             2)
                 print_message "$YELLOW" "当前被封禁的IP地址:"
+
+                # 检查fail2ban服务状态
+                if ! systemctl is-active --quiet fail2ban; then
+                    print_message "$RED" "fail2ban服务未运行，无法查看封禁IP"
+                    continue
+                fi
+
+                # 检查是否能连接到fail2ban
+                if ! fail2ban-client status &>/dev/null; then
+                    print_message "$RED" "无法连接到fail2ban服务"
+                    continue
+                fi
+
+                # 获取封禁IP列表
+                banned_found=false
                 for jail in $(fail2ban-client status | grep "Jail list:" | cut -d: -f2 | tr ',' ' '); do
                     jail=$(echo $jail | xargs)
                     if [[ -n "$jail" ]]; then
                         banned_ips=$(fail2ban-client status "$jail" | grep "Banned IP list:" | cut -d: -f2)
                         if [[ -n "$banned_ips" && "$banned_ips" != " " ]]; then
                             echo "$jail: $banned_ips"
+                            banned_found=true
                         fi
                     fi
                 done
+
+                if [[ "$banned_found" == false ]]; then
+                    print_message "$GREEN" "当前没有被封禁的IP地址"
+                fi
                 ;;
             3)
+                # 检查fail2ban服务状态
+                if ! systemctl is-active --quiet fail2ban; then
+                    print_message "$RED" "fail2ban服务未运行，无法解封IP"
+                    continue
+                fi
+
+                # 检查是否能连接到fail2ban
+                if ! fail2ban-client status &>/dev/null; then
+                    print_message "$RED" "无法连接到fail2ban服务"
+                    continue
+                fi
+
                 read -p "请输入要解封的IP地址: " unban_ip
                 if [[ -n "$unban_ip" ]]; then
                     print_message "$YELLOW" "可用的jail:"
-                    fail2ban-client status | grep "Jail list:" | cut -d: -f2
-                    read -p "请输入jail名称 (如sshd): " jail_name
-                    if [[ -n "$jail_name" ]]; then
-                        if fail2ban-client set "$jail_name" unbanip "$unban_ip"; then
-                            print_message "$GREEN" "IP $unban_ip 已从 $jail_name 解封"
-                            log_message "手动解封IP: $unban_ip from $jail_name"
-                        else
-                            print_message "$RED" "解封失败，请检查IP和jail名称"
+                    if fail2ban-client status | grep "Jail list:" | cut -d: -f2; then
+                        read -p "请输入jail名称 (如sshd): " jail_name
+                        if [[ -n "$jail_name" ]]; then
+                            if fail2ban-client set "$jail_name" unbanip "$unban_ip"; then
+                                print_message "$GREEN" "IP $unban_ip 已从 $jail_name 解封"
+                                log_message "手动解封IP: $unban_ip from $jail_name"
+                            else
+                                print_message "$RED" "解封失败，请检查IP和jail名称"
+                            fi
                         fi
+                    else
+                        print_message "$RED" "无法获取jail列表"
                     fi
                 fi
                 ;;
@@ -1355,19 +1941,167 @@ manage_fail2ban() {
                 ;;
             5)
                 if confirm_action "是否重启fail2ban服务?"; then
+                    print_message "$YELLOW" "正在重启fail2ban服务..."
                     systemctl restart fail2ban
-                    sleep 3
-                    print_message "$GREEN" "fail2ban服务已重启"
-                    fail2ban-client status
+
+                    # 等待服务启动
+                    print_message "$YELLOW" "等待服务启动..."
+                    for i in {1..30}; do
+                        if systemctl is-active --quiet fail2ban; then
+                            print_message "$GREEN" "✓ 服务已启动"
+                            break
+                        fi
+                        sleep 1
+                        echo -n "."
+                    done
+                    echo
+
+                    # 等待socket文件创建
+                    if systemctl is-active --quiet fail2ban; then
+                        wait_for_fail2ban_socket 30
+
+                        # 尝试获取状态
+                        if fail2ban-client status &>/dev/null; then
+                            print_message "$GREEN" "fail2ban服务已重启并正常运行"
+                            fail2ban-client status
+                        else
+                            print_message "$YELLOW" "服务已重启，但socket可能仍在初始化中"
+                            print_message "$YELLOW" "请稍后使用 'fail2ban-client status' 检查状态"
+                        fi
+                    else
+                        print_message "$RED" "服务重启失败"
+                        systemctl status fail2ban --no-pager -l | head -10
+                    fi
                 fi
                 ;;
             6)
                 print_message "$YELLOW" "测试fail2ban配置:"
-                fail2ban-client -t
-                if [[ $? -eq 0 ]]; then
-                    print_message "$GREEN" "配置文件语法正确"
+
+                # 检查配置文件是否存在
+                if [[ ! -f "/etc/fail2ban/jail.local" ]]; then
+                    print_message "$RED" "配置文件 /etc/fail2ban/jail.local 不存在"
+                    continue
+                fi
+
+                # 测试配置文件语法
+                if fail2ban-client -t; then
+                    print_message "$GREEN" "✓ 配置文件语法正确"
+
+                    # 显示配置摘要
+                    print_message "$YELLOW" "配置摘要:"
+                    echo "主配置文件: /etc/fail2ban/jail.local"
+                    if grep -q "^\[sshd\]" /etc/fail2ban/jail.local; then
+                        ssh_enabled=$(grep -A5 "^\[sshd\]" /etc/fail2ban/jail.local | grep "enabled" | cut -d= -f2 | xargs)
+                        ssh_port=$(grep -A10 "^\[sshd\]" /etc/fail2ban/jail.local | grep "port" | cut -d= -f2 | xargs)
+                        echo "- SSH保护: $ssh_enabled (端口: $ssh_port)"
+                    fi
+                    if grep -q "^\[ufw-block\]" /etc/fail2ban/jail.local; then
+                        ufw_enabled=$(grep -A5 "^\[ufw-block\]" /etc/fail2ban/jail.local | grep "enabled" | cut -d= -f2 | xargs)
+                        echo "- UFW阻止监控: $ufw_enabled"
+                    fi
                 else
-                    print_message "$RED" "配置文件存在错误"
+                    print_message "$RED" "✗ 配置文件存在错误"
+                    print_message "$YELLOW" "请检查配置文件语法"
+                fi
+                ;;
+            7)
+                print_message "$YELLOW" "fail2ban问题诊断和修复:"
+                echo
+
+                # 1. 检查服务状态
+                print_message "$BLUE" "1. 检查服务状态"
+                if systemctl is-active --quiet fail2ban; then
+                    print_message "$GREEN" "✓ fail2ban服务正在运行"
+                else
+                    print_message "$RED" "✗ fail2ban服务未运行"
+                    print_message "$YELLOW" "服务状态详情:"
+                    systemctl status fail2ban --no-pager -l | head -15
+                fi
+                echo
+
+                # 2. 检查socket文件
+                print_message "$BLUE" "2. 检查socket文件"
+                if [[ -S "/var/run/fail2ban/fail2ban.sock" ]]; then
+                    print_message "$GREEN" "✓ Socket文件存在: /var/run/fail2ban/fail2ban.sock"
+                    ls -la /var/run/fail2ban/fail2ban.sock
+                else
+                    print_message "$RED" "✗ Socket文件不存在: /var/run/fail2ban/fail2ban.sock"
+                    if [[ -e "/var/run/fail2ban/fail2ban.sock" ]]; then
+                        print_message "$YELLOW" "文件存在但不是socket类型:"
+                        ls -la /var/run/fail2ban/fail2ban.sock
+                    fi
+                fi
+                echo
+
+                # 3. 检查配置文件
+                print_message "$BLUE" "3. 检查配置文件"
+                if [[ -f "/etc/fail2ban/jail.local" ]]; then
+                    print_message "$GREEN" "✓ 配置文件存在: /etc/fail2ban/jail.local"
+                    if fail2ban-client -t &>/dev/null; then
+                        print_message "$GREEN" "✓ 配置文件语法正确"
+                    else
+                        print_message "$RED" "✗ 配置文件语法错误"
+                        print_message "$YELLOW" "语法检查结果:"
+                        fail2ban-client -t
+                    fi
+                else
+                    print_message "$RED" "✗ 配置文件不存在: /etc/fail2ban/jail.local"
+                fi
+                echo
+
+                # 4. 检查日志文件
+                print_message "$BLUE" "4. 检查日志文件"
+                if [[ -f "/var/log/fail2ban.log" ]]; then
+                    print_message "$GREEN" "✓ 日志文件存在: /var/log/fail2ban.log"
+                    print_message "$YELLOW" "最近的错误信息:"
+                    grep -i "error\|failed\|exception" /var/log/fail2ban.log | tail -5
+                else
+                    print_message "$YELLOW" "⚠ 日志文件不存在: /var/log/fail2ban.log"
+                fi
+                echo
+
+                # 5. 检查系统日志
+                print_message "$BLUE" "5. 检查系统日志中的fail2ban信息"
+                print_message "$YELLOW" "最近的fail2ban系统日志:"
+                journalctl -u fail2ban --since "10 minutes ago" --no-pager -n 10
+                echo
+
+                # 6. 提供修复选项
+                print_message "$BLUE" "6. 修复选项"
+                if ! systemctl is-active --quiet fail2ban; then
+                    if confirm_action "是否尝试启动fail2ban服务?"; then
+                        print_message "$YELLOW" "正在启动fail2ban服务..."
+                        systemctl start fail2ban
+                        sleep 5
+                        if systemctl is-active --quiet fail2ban; then
+                            print_message "$GREEN" "✓ 服务启动成功"
+                        else
+                            print_message "$RED" "✗ 服务启动失败"
+                            print_message "$YELLOW" "错误详情:"
+                            journalctl -u fail2ban --no-pager -n 10
+                        fi
+                    fi
+                fi
+
+                if [[ ! -S "/var/run/fail2ban/fail2ban.sock" ]] && systemctl is-active --quiet fail2ban; then
+                    if confirm_action "服务运行但socket文件缺失，是否重启服务?"; then
+                        print_message "$YELLOW" "正在重启fail2ban服务..."
+                        systemctl restart fail2ban
+                        sleep 5
+                        if [[ -S "/var/run/fail2ban/fail2ban.sock" ]]; then
+                            print_message "$GREEN" "✓ Socket文件已创建"
+                        else
+                            print_message "$RED" "✗ Socket文件仍然缺失"
+                        fi
+                    fi
+                fi
+
+                if [[ ! -f "/etc/fail2ban/jail.local" ]]; then
+                    if confirm_action "配置文件缺失，是否重新创建?"; then
+                        print_message "$YELLOW" "正在重新创建fail2ban配置..."
+                        # 调用安装函数重新创建配置
+                        install_fail2ban
+                    fi
                 fi
                 ;;
             0)
@@ -2019,9 +2753,14 @@ show_menu() {
     echo "11. 备份与恢复配置"
     echo "12. fail2ban管理"
     echo "13. 安全配置验证"
-    echo "14. 配置vless+reality代理"
-    echo "15. 代理服务管理"
-    echo "16. 一键全部执行"
+    echo "14. 证书管理 (Cloudflare)"
+    echo "15. Hysteria2服务"
+    echo "16. X-UI面板"
+    echo "17. Sub-Store服务"
+    echo "18. Nginx分流配置"
+    echo "19. 配置vless+reality代理"
+    echo "20. 代理服务管理"
+    echo "21. 一键全部执行"
     echo "0. 退出"
     echo
 }
@@ -2036,8 +2775,8 @@ main() {
     
     while true; do
         show_menu
-        read -p "请选择操作 (0-16): " choice
-        
+        read -p "请选择操作 (0-21): " choice
+
         case $choice in
             1) show_system_info ;;
             2) update_system ;;
@@ -2052,9 +2791,14 @@ main() {
             11) backup_recovery ;;
             12) manage_fail2ban ;;
             13) security_validation ;;
-            14) install_vless_reality ;;
-            15) manage_proxy_service ;;
-            16) run_all_hardening ;;
+            14) manage_certificates ;;
+            15) install_hysteria2 ;;
+            16) install_xui ;;
+            17) install_substore ;;
+            18) configure_nginx ;;
+            19) install_vless_reality ;;
+            20) manage_proxy_service ;;
+            21) run_all_hardening ;;
             0)
                 print_message "$GREEN" "感谢使用VPS安全加固脚本!"
                 print_message "$BLUE" "备份文件位置: $BACKUP_DIR"

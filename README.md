@@ -1,31 +1,159 @@
-# 自建 VPS 代理脚本
+# VPS 一体化安全加固和代理搭建脚本
 
-本脚本用于自建 reality、hysteria 节点，提供安全的节点搭建方式，通过修改 ssh 端口、ngnix 分流等方式，降低服务器对外暴露服务的风险，提升 vps 安全性。
+本项目提供一个统一的脚本 `security-hardening.sh`，集成了 VPS 安全加固和代理服务搭建的所有功能。
 
-同时依靠 3xui 面板搭建节点，能够为少数人提供服务，便于管理。建议只想其他用户提供 reality 节点，更加稳定可靠，hysteria 目前在逐渐被管控，高峰期会出现断流等问题。
+## 主要功能
 
-更加详细的内容请参考：[年轻人的第一台-vps-代理服务器](https://www.hysling.top/blog/proxy/%E5%B9%B4%E8%BD%BB%E4%BA%BA%E7%9A%84%E7%AC%AC%E4%B8%80%E5%8F%B0-vps-%E4%BB%A3%E7%90%86%E6%9C%8D%E5%8A%A1%E5%99%A8/)
+### 🛡️ 安全加固功能
+- 系统更新和用户管理
+- SSH 安全配置
+- 防火墙配置 (ufw)
+- **fail2ban 安装和管理** - 防止暴力破解攻击
+- 网络安全配置
+- 系统监控和清理
+- 安全扫描和备份
 
-本脚本采用模块化设计，build-all.sh 脚本将各个搭建功能模块化，通过 run.sh 脚本统一调用，建议先阅读上述博客，再来看 run.sh 的内容。通过本脚本，可以方便的搭建服务，但搭建过程中，仍然需要额外操作，比如在 cloudflare 中设置域名 dns，创建 api 令牌，购买域名等。
+### 🚀 代理服务搭建
+- **证书管理** - Cloudflare DNS 自动申请 SSL 证书
+- **Hysteria2 服务** - 高性能代理协议
+- **X-UI 面板** - 可视化管理界面
+- **Sub-Store 服务** - 订阅转换服务
+- **Nginx 分流配置** - 智能流量分发
+- **vless+reality 代理** - 最新的伪装技术
 
-本脚本更像是在上述博客的操作简化版，原理和步骤和博客一致，但节省大量时间。
+### 🔧 一体化设计
+所有功能集成在一个脚本中，避免多脚本管理的复杂性，提供统一的用户界面和配置管理。
 
-使用方式：修改 run.sh 中相关的配置信息，以及 build-all.sh 中的端口，然后命令行执行 ./run.sh 即可。
+## 使用方法
 
-脚本可查看具体帮助信息。
-
+### 基本使用
 ```bash
-$ ./build-all.sh --help
-使用方法:
-  ./build-all.sh [命令] [选项]
+# 下载脚本
+wget https://raw.githubusercontent.com/your-repo/security-hardening.sh
+chmod +x security-hardening.sh
 
-可用命令:
-  xui             X-UI面板
-  nginx           Nginx分流配置
-  setup           基础环境设置
-  cert            证书管理
-  substore        Sub-Store服务
-  hysteria        Hysteria2服务
-
-使用 ./build-all.sh 命令 --help 查看具体命令帮助
+# 运行脚本
+./security-hardening.sh
 ```
+
+### 功能菜单
+脚本提供交互式菜单，包含以下选项：
+
+**安全加固功能 (1-13)**
+1. 显示系统信息
+2. 系统更新
+3. 创建非root用户
+4. SSH安全配置
+5. 防火墙配置
+6. 安装fail2ban
+7. 网络安全配置
+8. 系统监控配置
+9. 精简系统组件
+10. 安全扫描与检查
+11. 备份与恢复配置
+12. fail2ban管理
+13. 安全配置验证
+
+**代理服务功能 (14-20)**
+14. 证书管理 (Cloudflare)
+15. Hysteria2服务
+16. X-UI面板
+17. Sub-Store服务
+18. Nginx分流配置
+19. 配置vless+reality代理
+20. 代理服务管理
+
+**一键执行 (21)**
+21. 一键全部执行
+
+## 快速开始
+
+### 1. 基础安全加固
+```bash
+./security-hardening.sh
+# 依次选择: 2 → 3 → 4 → 5 → 6
+# 或直接选择: 21 (一键全部执行)
+```
+
+### 2. 代理服务搭建
+```bash
+# 前提：已完成基础安全加固
+./security-hardening.sh
+
+# 步骤1: 申请证书
+# 选择 "14. 证书管理" → "1. 申请新证书"
+# 需要准备: 域名、邮箱、Cloudflare API Token、Zone ID、Account ID
+
+# 步骤2: 安装服务 (根据需要选择)
+# 选择 "15. Hysteria2服务" 或 "16. X-UI面板" 或 "17. Sub-Store服务"
+
+# 步骤3: 配置分流
+# 选择 "18. Nginx分流配置"
+```
+
+### 3. 故障排除
+如果遇到 fail2ban socket 连接问题：
+```bash
+./security-hardening.sh
+# 选择 "12. fail2ban管理" → "7. 诊断和修复问题"
+```
+
+## 重要说明
+
+### 前置要求
+1. **系统要求**: Debian/Ubuntu 系统
+2. **权限要求**: 必须使用 root 用户运行
+3. **网络要求**: 服务器需要能够访问外网
+
+### 证书申请要求
+使用 Cloudflare 证书管理功能需要：
+1. 在 Cloudflare 托管的域名
+2. Cloudflare API Token (需要 Zone:Read, DNS:Edit 权限)
+3. Cloudflare Zone ID 和 Account ID
+
+### 安全建议
+1. **修改默认端口**: SSH、X-UI 等服务端口
+2. **使用强密码**: 所有账户和服务密码
+3. **定期备份**: 重要配置和数据
+4. **监控日志**: 定期检查安全日志
+
+## 文档说明
+
+- `fail2ban完整指南.md` - fail2ban 的完整配置和故障排除指南
+- `VPS安全加固说明.md` - 详细的安全加固功能说明
+- `vless+reality配置指南.md` - 代理服务配置指南
+
+## 故障排除
+
+### fail2ban Socket 连接问题
+如果遇到 `Failed to access socket path: /var/run/fail2ban/fail2ban.sock` 错误：
+
+1. 使用脚本的自动诊断功能 (选项 12 → 7)
+2. 手动检查：`systemctl status fail2ban`
+3. 重启服务：`systemctl restart fail2ban`
+4. 等待 30-60 秒让服务完全启动
+
+### 证书申请失败
+1. 检查 Cloudflare API Token 权限
+2. 确认域名已在 Cloudflare 托管
+3. 验证 Zone ID 和 Account ID 正确性
+
+### 服务启动失败
+1. 检查端口是否被占用：`netstat -tlnp`
+2. 查看服务日志：`journalctl -u 服务名 -n 20`
+3. 确认防火墙规则：`ufw status`
+
+详细说明请参考相关文档文件。
+
+## 更新日志
+
+### v2.0.0 (当前版本)
+- 🔄 **重大更新**: 将所有功能整合到单一脚本
+- ➕ **新增功能**: 证书管理、Hysteria2、X-UI、Sub-Store、Nginx 分流
+- 🛠️ **优化**: fail2ban 诊断和修复功能
+- 📚 **改进**: 统一的用户界面和文档
+
+### v1.x.x (历史版本)
+- 基础安全加固功能
+- fail2ban 基础管理
+- 分离式脚本设计
