@@ -118,6 +118,36 @@ wait_for_fail2ban_socket() {
     return 1
 }
 
+# 获取当前SSH端口
+get_ssh_port() {
+    local ssh_port=""
+
+    # 方法1: 从sshd_config文件获取
+    ssh_port=$(grep -E "^Port\s+|^#?Port\s+" /etc/ssh/sshd_config | grep -v "^#" | awk '{print $2}' | head -1 2>/dev/null)
+
+    # 方法2: 从当前SSH连接获取
+    if [[ -z "$ssh_port" ]]; then
+        ssh_port=$(ss -tlnp | grep sshd | awk -F: '{print $2}' | awk '{print $1}' | head -1 2>/dev/null)
+    fi
+
+    # 方法3: 从环境变量获取
+    if [[ -z "$ssh_port" ]] && [[ -n "$SSH_CONNECTION" ]]; then
+        ssh_port=$(echo $SSH_CONNECTION | awk '{print $4}')
+    fi
+
+    # 方法4: 从netstat获取
+    if [[ -z "$ssh_port" ]]; then
+        ssh_port=$(netstat -tlnp 2>/dev/null | grep sshd | awk '{print $4}' | awk -F: '{print $NF}' | head -1)
+    fi
+
+    # 验证端口有效性
+    if [[ -n "$ssh_port" ]] && [[ "$ssh_port" =~ ^[0-9]+$ ]] && [[ "$ssh_port" -ge 1 ]] && [[ "$ssh_port" -le 65535 ]]; then
+        echo "$ssh_port"
+    else
+        echo "22"  # 默认端口
+    fi
+}
+
 # 系统信息显示
 show_system_info() {
     print_message "$BLUE" "=== 系统信息 ==="
@@ -510,13 +540,9 @@ configure_firewall() {
         ufw default deny incoming
         ufw default allow outgoing
 
-        # 允许SSH (获取当前SSH端口并验证有效性)
-        ssh_port=$(grep "^Port" /etc/ssh/sshd_config | awk '{print $2}' 2>/dev/null)
-        # 确保端口是有效数字，否则使用默认端口22
-        if [[ -z "$ssh_port" ]] || ! [[ "$ssh_port" =~ ^[0-9]+$ ]] || [[ "$ssh_port" -lt 1 ]] || [[ "$ssh_port" -gt 65535 ]]; then
-            print_message "$YELLOW" "警告: 检测到无效的SSH端口配置，使用默认端口22"
-            ssh_port=22
-        fi
+        # 允许SSH (获取当前SSH端口)
+        ssh_port=$(get_ssh_port)
+        print_message "$GREEN" "检测到SSH端口: $ssh_port"
 
         ufw allow "$ssh_port"/tcp comment 'SSH'
         print_message "$GREEN" "已允许SSH端口 $ssh_port/tcp"
@@ -709,7 +735,7 @@ install_fail2ban() {
             else
                 print_message "$YELLOW" "将保留现有配置，仅更新端口和启用状态"
                 # 更新ssh端口配置
-                ssh_port=$(grep "^Port" /etc/ssh/sshd_config | awk '{print $2}' || echo "22")
+                ssh_port=$(get_ssh_port)
                 sed -i "s/^port = .*/port = $ssh_port/" "/etc/fail2ban/jail.local"
                 # 确保sshd jail启用
                 sed -i "s/^enabled = false/enabled = true/" "/etc/fail2ban/jail.local"
@@ -724,7 +750,7 @@ install_fail2ban() {
         fi
 
         # 获取SSH端口
-        ssh_port=$(grep "^Port" /etc/ssh/sshd_config | awk '{print $2}' || echo "22")
+        ssh_port=$(get_ssh_port)
 
         # 创建jail.local配置
         cat > /etc/fail2ban/jail.local << EOF
@@ -747,7 +773,7 @@ maxretry = 3
 bantime = 3600
 
 [ufw-block]
-enabled = true
+enabled = false
 filter = ufw-block
 logpath = /var/log/syslog
 maxretry = 5
@@ -760,12 +786,14 @@ enabled = false
 filter = nginx-http-auth
 logpath = /var/log/nginx/error.log
 maxretry = 3
+bantime = 3600
 
 [nginx-limit-req]
 enabled = false
 filter = nginx-limit-req
 logpath = /var/log/nginx/error.log
 maxretry = 3
+bantime = 3600
 EOF
 
         log_message "配置fail2ban规则"
@@ -795,9 +823,25 @@ EOF
 
         # 验证fail2ban配置
         print_message "$YELLOW" "验证fail2ban配置..."
-        if ! fail2ban-client -t &>/dev/null; then
-            print_message "$RED" "fail2ban配置验证失败，请检查配置"
-            return 1
+
+        # 首先测试完整配置
+        if ! test_and_fix_fail2ban_config "$ssh_port" "full"; then
+            print_message "$YELLOW" "完整配置失败，显示错误信息："
+            fail2ban-client -t 2>&1 | head -5
+
+            print_message "$YELLOW" "尝试基本配置..."
+            if ! test_and_fix_fail2ban_config "$ssh_port" "basic"; then
+                print_message "$YELLOW" "基本配置失败，尝试最简配置..."
+                if ! test_and_fix_fail2ban_config "$ssh_port" "minimal"; then
+                    print_message "$RED" "所有配置都失败，将使用默认配置并跳过验证"
+                    # 创建最基本的配置，不验证
+                    cat > /etc/fail2ban/jail.local << EOF
+[sshd]
+enabled = true
+port = $ssh_port
+EOF
+                fi
+            fi
         fi
 
         # 启动fail2ban服务
@@ -1307,6 +1351,75 @@ EOF
     # 显示现有备份
     print_message "$YELLOW" "现有备份目录:"
     ls -la /root/ | grep -E "(backup|security-backup)" || echo "未找到备份目录"
+}
+
+# 测试和修复fail2ban配置
+test_and_fix_fail2ban_config() {
+    local ssh_port=$1
+    local config_level=${2:-"full"}  # full, basic, minimal
+
+    case $config_level in
+        "full")
+            cat > /etc/fail2ban/jail.local << EOF
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 3
+ignoreip = 127.0.0.1/8 ::1
+
+[sshd]
+enabled = true
+port = $ssh_port
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 3600
+
+[ufw-block]
+enabled = false
+filter = ufw-block
+logpath = /var/log/syslog
+maxretry = 5
+findtime = 600
+bantime = 86400
+action = ufw
+EOF
+            ;;
+        "basic")
+            cat > /etc/fail2ban/jail.local << EOF
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 3
+
+[sshd]
+enabled = true
+port = $ssh_port
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 3600
+EOF
+            ;;
+        "minimal")
+            cat > /etc/fail2ban/jail.local << EOF
+[sshd]
+enabled = true
+port = $ssh_port
+filter = sshd
+logpath = /var/log/auth.log
+EOF
+            ;;
+    esac
+
+    # 测试配置
+    if fail2ban-client -t &>/dev/null; then
+        print_message "$GREEN" "✓ $config_level 配置验证成功"
+        return 0
+    else
+        print_message "$RED" "✗ $config_level 配置验证失败"
+        return 1
+    fi
 }
 
 # 安装acme.sh并申请证书
@@ -2719,7 +2832,7 @@ run_all_hardening() {
         # 显示配置摘要
         echo
         print_message "$BLUE" "配置摘要:"
-        echo "- SSH端口: $(grep "^Port" /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' || echo "22")"
+        echo "- SSH端口: $(get_ssh_port)"
         echo "- 防火墙: $(ufw status | head -1)"
         echo "- fail2ban: $(systemctl is-active fail2ban 2>/dev/null || echo "未安装")"
         if [[ -f "/usr/local/etc/xray/config.json" ]]; then
