@@ -3348,7 +3348,7 @@ main() {
     
     while true; do
         show_menu
-        read -p "请选择操作 (0-21, 99): " choice
+        read -p "请选择操作 (0-22, 99): " choice
 
         case $choice in
             0) show_security_overview ;;
@@ -3371,8 +3371,9 @@ main() {
             17) install_substore ;;
             18) configure_nginx ;;
             19) install_vless_reality ;;
-            20) manage_proxy_service ;;
-            21) run_all_hardening ;;
+            20) install_singbox ;;
+            21) manage_proxy_service ;;
+            22) run_all_hardening ;;
             99)
                 print_message "$GREEN" "感谢使用VPS安全加固脚本!"
                 print_message "$BLUE" "备份文件位置: $BACKUP_DIR"

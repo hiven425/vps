@@ -19,6 +19,7 @@
 - **Sub-Store服务**: 订阅转换和管理
 - **Nginx分流配置**: 智能流量分发
 - **vless+reality代理**: 最新伪装技术
+- **sing-box**: 现代化高性能代理工具
 
 ### 🎨 增强体验
 - **可视化状态显示**: 🟢🟡🔴 直观的服务状态指示器
@@ -61,10 +62,10 @@ chmod +x security-hardening.sh
 🚀 代理服务功能:
 14. 证书管理          18. Nginx分流配置
 15. Hysteria2服务     19. vless+reality代理
-16. 3X-UI面板         20. 代理服务管理
-17. Sub-Store服务
+16. 3X-UI面板         20. sing-box安装
+17. Sub-Store服务     21. 代理服务管理
 
-⚡ 21. 一键全部执行
+⚡ 22. 一键全部执行
 ```
 
 ## 📋 功能展示
@@ -138,7 +139,7 @@ chmod +x security-hardening.sh
 如需搭建代理服务：
 1. 先完成基础安全加固
 2. 准备Cloudflare相关信息（域名、API Token等）
-3. 按需选择代理协议（Hysteria2、3X-UI等）
+3. 按需选择代理协议（Hysteria2、3X-UI、sing-box等）
 
 ## 📄 许可证
 
