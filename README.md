@@ -15,7 +15,7 @@
 ### 🚀 代理服务功能
 - **证书管理**: Cloudflare DNS自动申请SSL证书
 - **Hysteria2服务**: 高性能代理协议部署
-- **X-UI面板**: 可视化代理管理界面
+- **3X-UI面板**: 最新的可视化代理管理界面
 - **Sub-Store服务**: 订阅转换和管理
 - **Nginx分流配置**: 智能流量分发
 - **vless+reality代理**: 最新伪装技术
@@ -61,7 +61,7 @@ chmod +x security-hardening.sh
 🚀 代理服务功能:
 14. 证书管理          18. Nginx分流配置
 15. Hysteria2服务     19. vless+reality代理
-16. X-UI面板          20. 代理服务管理
+16. 3X-UI面板         20. 代理服务管理
 17. Sub-Store服务
 
 ⚡ 21. 一键全部执行
@@ -113,6 +113,9 @@ chmod +x security-hardening.sh
 - **密钥认证**: 禁用密码认证前会验证SSH密钥配置
 - **用户验证**: 交互式配置允许登录的用户，避免被锁定
 - **安全重启**: SSH服务重启前会进行多重安全检查
+- **连接保活**: 60秒心跳，防止超时断开
+- **性能优化**: 禁用DNS反向解析，加快登录速度
+- **兼容性**: 保持PAM支持和SFTP子系统
 
 ### 🛡️ 防火墙配置
 - 自动检测SSH端口并配置防火墙规则
@@ -135,7 +138,7 @@ chmod +x security-hardening.sh
 如需搭建代理服务：
 1. 先完成基础安全加固
 2. 准备Cloudflare相关信息（域名、API Token等）
-3. 按需选择代理协议（Hysteria2、X-UI等）
+3. 按需选择代理协议（Hysteria2、3X-UI等）
 
 ## 📄 许可证
 

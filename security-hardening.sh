@@ -537,21 +537,31 @@ PermitRootLogin prohibit-password
 # 认证配置
 PasswordAuthentication no
 PubkeyAuthentication yes
-
-# 高级安全配置
-Protocol 2
-MaxAuthTries 3
-ClientAliveInterval 300
-ClientAliveCountMax 2
-LoginGraceTime 60
-MaxStartups 10:30:100
-MaxSessions 4
+AuthorizedKeysFile .ssh/authorized_keys
 
 # 禁用不安全的认证方式
 ChallengeResponseAuthentication no
+KbdInteractiveAuthentication no
 KerberosAuthentication no
 GSSAPIAuthentication no
+
+# PAM支持（允许本地认证）
 UsePAM yes
+
+# 连接保活配置（防止超时断开）
+ClientAliveInterval 60
+ClientAliveCountMax 3
+
+# 性能优化
+UseDNS no
+TCPKeepAlive yes
+
+# 安全限制
+Protocol 2
+MaxAuthTries 3
+LoginGraceTime 60
+MaxStartups 10:30:100
+MaxSessions 4
 
 # 允许的用户
 AllowUsers ${valid_users[*]}
@@ -562,8 +572,13 @@ AllowTcpForwarding no
 X11Forwarding no
 PrintMotd no
 PrintLastLog yes
-TCPKeepAlive yes
 Compression delayed
+
+# 环境变量传递（保持系统兼容性）
+AcceptEnv LANG LC_*
+
+# SFTP子系统支持
+Subsystem sftp /usr/lib/openssh/sftp-server
 
 # 强化加密算法
 KexAlgorithms curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
@@ -1779,9 +1794,9 @@ install_xui() {
     if confirm_action "是否安装3X-UI面板?"; then
         print_message "$YELLOW" "开始安装3X-UI面板..."
 
-        # 安装X-UI
+        # 安装3X-UI
         print_message "$YELLOW" "下载并安装3X-UI..."
-        bash <(curl -Ls https://raw.githubusercontent.com/MHSanaei/3x-ui/refs/tags/v2.6.0/install.sh)
+        bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
 
         # 配置提示
         print_message "$GREEN" "3X-UI面板安装完成"
@@ -2941,6 +2956,88 @@ EOF
     log_message "生成vless+reality客户端配置"
 }
 
+# sing-box安装
+install_singbox() {
+    print_message "$BLUE" "=== sing-box安装 ==="
+
+    print_message "$YELLOW" "sing-box是一个现代化的代理工具，支持多种协议："
+    echo "• 支持协议: VLESS, VMess, Trojan, Shadowsocks, Hysteria2等"
+    echo "• 高性能: 基于Go语言开发，性能优异"
+    echo "• 配置灵活: 支持复杂的路由规则和分流配置"
+    echo "• 维护活跃: 持续更新，支持最新协议特性"
+    echo
+
+    if confirm_action "是否安装sing-box?"; then
+        print_message "$YELLOW" "开始安装sing-box..."
+
+        # 检查系统架构
+        local arch=$(uname -m)
+        print_message "$CYAN" "检测到系统架构: $arch"
+
+        # 安装sing-box
+        print_message "$YELLOW" "下载并安装sing-box..."
+        if bash <(wget -qO- -o- https://github.com/233boy/sing-box/raw/main/install.sh); then
+            print_message "$GREEN" "sing-box安装成功"
+
+            # 检查安装状态
+            if command -v sing-box &> /dev/null; then
+                local version=$(sing-box version 2>/dev/null | head -1 || echo "未知版本")
+                print_message "$GREEN" "安装版本: $version"
+
+                # 检查服务状态
+                if systemctl is-enabled sing-box &>/dev/null; then
+                    print_message "$GREEN" "✓ sing-box服务已启用"
+                    if systemctl is-active --quiet sing-box; then
+                        print_message "$GREEN" "✓ sing-box服务正在运行"
+                    else
+                        print_message "$YELLOW" "⚠ sing-box服务未运行"
+                    fi
+                else
+                    print_message "$YELLOW" "⚠ sing-box服务未启用"
+                fi
+            else
+                print_message "$YELLOW" "⚠ sing-box命令未找到，可能需要重新加载环境"
+            fi
+
+            echo
+            print_message "$CYAN" "📋 sing-box管理命令:"
+            echo "• 查看状态: sing-box status"
+            echo "• 启动服务: sing-box start"
+            echo "• 停止服务: sing-box stop"
+            echo "• 重启服务: sing-box restart"
+            echo "• 查看配置: sing-box config"
+            echo "• 查看日志: sing-box log"
+            echo "• 更新程序: sing-box update"
+            echo "• 卸载程序: sing-box uninstall"
+            echo
+
+            print_message "$YELLOW" "配置提示:"
+            echo "1. 配置文件位置: /usr/local/etc/sing-box/config.json"
+            echo "2. 可使用 'sing-box config' 命令进行配置"
+            echo "3. 支持多种协议和复杂路由规则"
+            echo "4. 建议配置TLS证书以提高安全性"
+            echo
+
+            if confirm_action "是否现在配置sing-box?"; then
+                print_message "$YELLOW" "启动sing-box配置..."
+                sing-box
+            fi
+
+            log_message "sing-box安装完成"
+        else
+            print_message "$RED" "sing-box安装失败"
+            print_message "$YELLOW" "可能的原因:"
+            echo "1. 网络连接问题"
+            echo "2. 系统架构不支持"
+            echo "3. 权限不足"
+            echo
+            print_message "$YELLOW" "请检查网络连接后重试，或访问官方文档:"
+            echo "https://sing-box.sagernet.org/"
+            return 1
+        fi
+    fi
+}
+
 # 代理服务管理
 manage_proxy_service() {
     print_message "$BLUE" "=== 代理服务管理 ==="
@@ -3229,13 +3326,14 @@ show_menu() {
     echo "🚀 代理服务功能:"
     echo "14. 证书管理 (Cloudflare)"
     echo "15. Hysteria2服务"
-    echo "16. X-UI面板"
+    echo "16. 3X-UI面板"
     echo "17. Sub-Store服务"
     echo "18. Nginx分流配置"
     echo "19. 配置vless+reality代理"
-    echo "20. 代理服务管理"
+    echo "20. sing-box安装"
+    echo "21. 代理服务管理"
     echo ""
-    echo "⚡ 21. 一键全部执行"
+    echo "⚡ 22. 一键全部执行"
     echo "❌ 99. 退出"
     echo
 }
