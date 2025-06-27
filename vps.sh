@@ -577,9 +577,6 @@ Compression delayed
 # 环境变量传递（保持系统兼容性）
 AcceptEnv LANG LC_*
 
-# SFTP子系统支持
-Subsystem sftp /usr/lib/openssh/sftp-server
-
 # 强化加密算法
 KexAlgorithms curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
 Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
