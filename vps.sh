@@ -2662,9 +2662,9 @@ security_validation() {
     fi
 }
 
-# 配置vless+reality代理
+# 配置VLESS-HTTP2-REALITY代理
 install_vless_reality() {
-    print_message "$BLUE" "=== 配置vless+reality代理 ==="
+    print_message "$BLUE" "=== 配置VLESS-HTTP2-REALITY代理 ==="
 
     # 检查系统要求
     if ! command -v curl &> /dev/null; then
@@ -2680,14 +2680,15 @@ install_vless_reality() {
         fi
     fi
 
-    print_message "$YELLOW" "vless+reality配置需要以下信息:"
-    echo "1. 监听端口 (建议: 443)"
-    echo "2. 伪装域名 (如: www.microsoft.com)"
-    echo "3. 用户UUID (自动生成或手动输入)"
-    echo "4. 传输协议 (TCP/gRPC)"
+    print_message "$YELLOW" "VLESS-HTTP2-REALITY配置特性:"
+    echo "• 支持HTTP/2传输协议，性能优异"
+    echo "• 支持IPv4/IPv6双栈监听"
+    echo "• 使用REALITY技术，抗检测能力强"
+    echo "• 支持多用户配置"
+    echo "• 自动优化传输参数"
     echo
 
-    if ! confirm_action "是否继续配置vless+reality?"; then
+    if ! confirm_action "是否继续配置VLESS-HTTP2-REALITY?"; then
         return 0
     fi
 
@@ -2701,42 +2702,80 @@ install_vless_reality() {
         return 1
     fi
 
-    read -p "请输入伪装域名 (默认: www.microsoft.com): " dest_domain
-    dest_domain=${dest_domain:-"www.microsoft.com"}
-
-    read -p "请输入用户UUID (留空自动生成): " user_uuid
-    if [[ -z "$user_uuid" ]]; then
-        # 生成UUID
-        if command -v uuidgen &> /dev/null; then
-            user_uuid=$(uuidgen)
-        else
-            user_uuid=$(cat /proc/sys/kernel/random/uuid)
-        fi
+    # 检测IPv6支持
+    local ipv6_support=false
+    if ip -6 addr show | grep -q "inet6.*global"; then
+        ipv6_support=true
+        print_message "$GREEN" "检测到IPv6支持"
+    else
+        print_message "$YELLOW" "未检测到IPv6支持，将仅使用IPv4"
     fi
 
-    print_message "$YELLOW" "传输协议选择:"
-    echo "1. TCP (推荐，兼容性好)"
-    echo "2. gRPC (性能更好，但可能被检测)"
-    read -p "请选择 (1-2): " transport_choice
+    # 伪装域名选择
+    print_message "$YELLOW" "推荐伪装域名 (支持HTTP/2):"
+    echo "1. www.microsoft.com (推荐)"
+    echo "2. www.cloudflare.com"
+    echo "3. www.apple.com"
+    echo "4. 自定义域名"
+    read -p "请选择 (1-4): " domain_choice
 
-    case $transport_choice in
-        1) transport_type="tcp" ;;
-        2) transport_type="grpc" ;;
-        *) transport_type="tcp" ;;
+    case $domain_choice in
+        1) dest_domain="www.microsoft.com" ;;
+        2) dest_domain="www.cloudflare.com" ;;
+        3) dest_domain="www.apple.com" ;;
+        4)
+            read -p "请输入自定义域名: " dest_domain
+            if [[ -z "$dest_domain" ]]; then
+                dest_domain="www.microsoft.com"
+            fi
+            ;;
+        *) dest_domain="www.microsoft.com" ;;
     esac
+
+    # 验证域名是否支持HTTP/2
+    print_message "$YELLOW" "验证域名HTTP/2支持..."
+    if curl -s --http2 -I "https://$dest_domain" | grep -q "HTTP/2"; then
+        print_message "$GREEN" "✓ 域名支持HTTP/2"
+    else
+        print_message "$YELLOW" "⚠ 域名可能不支持HTTP/2，但仍可使用"
+    fi
+
+    # 用户配置
+    print_message "$YELLOW" "用户配置:"
+    read -p "请输入用户数量 (1-10, 默认1): " user_count
+    user_count=${user_count:-1}
+
+    if [[ ! "$user_count" =~ ^[0-9]+$ ]] || [[ "$user_count" -lt 1 ]] || [[ "$user_count" -gt 10 ]]; then
+        user_count=1
+    fi
+
+    # 生成用户UUID
+    local user_uuids=()
+    for ((i=1; i<=user_count; i++)); do
+        if command -v uuidgen &> /dev/null; then
+            user_uuids+=("$(uuidgen)")
+        else
+            user_uuids+=("$(cat /proc/sys/kernel/random/uuid)")
+        fi
+    done
 
     print_message "$YELLOW" "配置信息确认:"
     echo "监听端口: $vless_port"
     echo "伪装域名: $dest_domain"
-    echo "用户UUID: $user_uuid"
-    echo "传输协议: $transport_type"
+    echo "传输协议: HTTP/2"
+    echo "IPv6支持: $($ipv6_support && echo "是" || echo "否")"
+    echo "用户数量: $user_count"
+    echo "用户UUID:"
+    for ((i=0; i<user_count; i++)); do
+        echo "  用户$((i+1)): ${user_uuids[i]}"
+    done
     echo
 
     if ! confirm_action "确认配置信息?"; then
         return 0
     fi
 
-    log_message "开始配置vless+reality代理"
+    log_message "开始配置VLESS-HTTP2-REALITY代理"
 
     # 安装Xray
     print_message "$YELLOW" "安装Xray核心..."
@@ -2746,8 +2785,8 @@ install_vless_reality() {
     fi
 
     # 生成配置文件
-    print_message "$YELLOW" "生成配置文件..."
-    if ! generate_vless_config "$vless_port" "$dest_domain" "$user_uuid" "$transport_type"; then
+    print_message "$YELLOW" "生成HTTP/2配置文件..."
+    if ! generate_vless_http2_config "$vless_port" "$dest_domain" "$ipv6_support" "${user_uuids[@]}"; then
         print_message "$RED" "配置文件生成失败"
         return 1
     fi
@@ -2755,30 +2794,30 @@ install_vless_reality() {
     # 配置防火墙
     print_message "$YELLOW" "配置防火墙规则..."
     if command -v ufw &> /dev/null; then
-        ufw allow "$vless_port"/tcp comment 'vless+reality'
+        ufw allow "$vless_port"/tcp comment 'VLESS-HTTP2-REALITY'
         log_message "开放端口: $vless_port"
     fi
 
     # 启动服务
-    print_message "$YELLOW" "启动vless+reality服务..."
+    print_message "$YELLOW" "启动VLESS-HTTP2-REALITY服务..."
     systemctl enable xray
     systemctl start xray
 
     if systemctl is-active --quiet xray; then
-        print_message "$GREEN" "vless+reality服务启动成功!"
-        log_message "vless+reality服务配置完成"
+        print_message "$GREEN" "VLESS-HTTP2-REALITY服务启动成功!"
+        log_message "VLESS-HTTP2-REALITY服务配置完成"
 
         # 生成客户端配置
-        generate_client_config "$vless_port" "$dest_domain" "$user_uuid" "$transport_type"
+        generate_http2_client_config "$vless_port" "$dest_domain" "${user_uuids[@]}"
 
         # 显示服务状态
         print_message "$YELLOW" "服务状态:"
-        systemctl status xray --no-pager -l
+        systemctl status xray --no-pager -l | head -10
 
     else
-        print_message "$RED" "vless+reality服务启动失败"
+        print_message "$RED" "VLESS-HTTP2-REALITY服务启动失败"
         print_message "$YELLOW" "查看错误日志:"
-        journalctl -u xray --no-pager -l
+        journalctl -u xray --no-pager -l | tail -20
         return 1
     fi
 }
@@ -2799,23 +2838,57 @@ install_xray_core() {
     fi
 }
 
-# 生成vless+reality配置
-generate_vless_config() {
+# 生成VLESS-HTTP2-REALITY配置
+generate_vless_http2_config() {
     local port=$1
     local dest_domain=$2
-    local uuid=$3
-    local transport=$4
+    local ipv6_support=$3
+    shift 3
+    local user_uuids=("$@")
 
     # 生成密钥对
     local key_pair=$(/usr/local/bin/xray x25519)
     local private_key=$(echo "$key_pair" | grep "Private key:" | cut -d' ' -f3)
     local public_key=$(echo "$key_pair" | grep "Public key:" | cut -d' ' -f3)
 
-    # 获取目标网站证书信息
-    local short_id=$(openssl rand -hex 8)
+    # 生成多个短ID
+    local short_ids=()
+    for i in {1..3}; do
+        short_ids+=("$(openssl rand -hex $((i*2)))")
+    done
 
     # 创建配置目录
     mkdir -p /usr/local/etc/xray
+
+    # 构建客户端配置
+    local clients_config=""
+    for uuid in "${user_uuids[@]}"; do
+        if [[ -n "$clients_config" ]]; then
+            clients_config+=","
+        fi
+        clients_config+="
+                    {
+                        \"id\": \"$uuid\",
+                        \"flow\": \"\"
+                    }"
+    done
+
+    # 构建短ID配置
+    local short_ids_config=""
+    for short_id in "${short_ids[@]}"; do
+        if [[ -n "$short_ids_config" ]]; then
+            short_ids_config+=","
+        fi
+        short_ids_config+="\"$short_id\""
+    done
+
+    # 构建监听地址配置
+    local listen_config=""
+    if [[ "$ipv6_support" == true ]]; then
+        listen_config="\"listen\": \"::\","
+    else
+        listen_config="\"listen\": \"0.0.0.0\","
+    fi
 
     # 生成服务器配置
     cat > /usr/local/etc/xray/config.json << EOF
@@ -2827,19 +2900,16 @@ generate_vless_config() {
     },
     "inbounds": [
         {
+            $listen_config
             "port": $port,
             "protocol": "vless",
             "settings": {
-                "clients": [
-                    {
-                        "id": "$uuid",
-                        "flow": "xtls-rprx-vision"
-                    }
+                "clients": [$clients_config
                 ],
                 "decryption": "none"
             },
             "streamSettings": {
-                "network": "$transport",
+                "network": "h2",
                 "security": "reality",
                 "realitySettings": {
                     "show": false,
@@ -2850,18 +2920,46 @@ generate_vless_config() {
                     ],
                     "privateKey": "$private_key",
                     "shortIds": [
-                        "$short_id"
+                        $short_ids_config
                     ]
+                },
+                "httpSettings": {
+                    "path": "/",
+                    "method": "GET",
+                    "headers": {
+                        "Host": ["$dest_domain"]
+                    }
                 }
+            },
+            "sniffing": {
+                "enabled": true,
+                "destOverride": ["http", "tls"]
             }
         }
     ],
     "outbounds": [
         {
             "protocol": "freedom",
+            "settings": {
+                "domainStrategy": "UseIPv4"
+            },
             "tag": "direct"
+        },
+        {
+            "protocol": "blackhole",
+            "settings": {},
+            "tag": "blocked"
         }
-    ]
+    ],
+    "routing": {
+        "rules": [
+            {
+                "type": "field",
+                "protocol": ["bittorrent"],
+                "outboundTag": "blocked"
+            }
+        ]
+    }
 }
 EOF
 
@@ -2870,87 +2968,138 @@ EOF
     chown nobody:nogroup /var/log/xray
 
     # 保存配置信息供客户端使用
-    cat > /root/vless-reality-config.txt << EOF
-# vless+reality配置信息
-服务器地址: $(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+    local server_ipv4=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+    local server_ipv6=""
+    if [[ "$ipv6_support" == true ]]; then
+        server_ipv6=$(curl -s -6 ifconfig.me 2>/dev/null || ip -6 addr show | grep 'inet6.*global' | head -1 | awk '{print $2}' | cut -d'/' -f1)
+    fi
+
+    cat > /root/vless-http2-reality-config.txt << EOF
+# VLESS-HTTP2-REALITY配置信息
+服务器IPv4地址: $server_ipv4
+$([ -n "$server_ipv6" ] && echo "服务器IPv6地址: $server_ipv6")
 端口: $port
-用户ID: $uuid
-传输协议: $transport
+传输协议: HTTP/2
 伪装域名: $dest_domain
 公钥: $public_key
-短ID: $short_id
+短ID列表: ${short_ids[*]}
+用户数量: ${#user_uuids[@]}
+用户UUID列表:
+$(for i in "${!user_uuids[@]}"; do echo "  用户$((i+1)): ${user_uuids[i]}"; done)
 配置时间: $(date)
 EOF
 
-    log_message "vless+reality配置文件已生成"
+    log_message "VLESS-HTTP2-REALITY配置文件已生成"
     return 0
 }
 
-# 生成客户端配置
-generate_client_config() {
+# 生成HTTP/2客户端配置
+generate_http2_client_config() {
     local port=$1
     local dest_domain=$2
-    local uuid=$3
-    local transport=$4
+    shift 2
+    local user_uuids=("$@")
 
-    local server_ip=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
-    local public_key=$(grep "公钥:" /root/vless-reality-config.txt | cut -d' ' -f2)
-    local short_id=$(grep "短ID:" /root/vless-reality-config.txt | cut -d' ' -f2)
+    local server_ipv4=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+    local server_ipv6=$(curl -s -6 ifconfig.me 2>/dev/null || ip -6 addr show | grep 'inet6.*global' | head -1 | awk '{print $2}' | cut -d'/' -f1)
+    local public_key=$(grep "公钥:" /root/vless-http2-reality-config.txt | cut -d' ' -f2)
+    local short_ids=($(grep "短ID列表:" /root/vless-http2-reality-config.txt | cut -d' ' -f2-))
 
-    print_message "$GREEN" "客户端配置信息:"
-    echo "=================================="
+    print_message "$GREEN" "VLESS-HTTP2-REALITY客户端配置:"
+    echo "=================================================="
     echo "协议: VLESS"
-    echo "地址: $server_ip"
+    echo "IPv4地址: $server_ipv4"
+    [[ -n "$server_ipv6" ]] && echo "IPv6地址: [$server_ipv6]"
     echo "端口: $port"
-    echo "用户ID: $uuid"
-    echo "流控: xtls-rprx-vision"
-    echo "传输协议: $transport"
-    echo "传输层安全: reality"
+    echo "传输协议: HTTP/2"
+    echo "传输层安全: REALITY"
     echo "SNI: $dest_domain"
     echo "Fingerprint: chrome"
     echo "PublicKey: $public_key"
-    echo "ShortId: $short_id"
-    echo "SpiderX: /"
-    echo "=================================="
+    echo "ShortId: ${short_ids[0]} (推荐)"
+    echo "Path: /"
+    echo "Host: $dest_domain"
+    echo "=================================================="
 
     # 生成分享链接
-    local vless_link="vless://$uuid@$server_ip:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$dest_domain&fp=chrome&pbk=$public_key&sid=$short_id&type=$transport#VPS-Reality"
+    local share_links=""
+    local client_configs=""
+
+    for i in "${!user_uuids[@]}"; do
+        local uuid="${user_uuids[i]}"
+        local user_num=$((i+1))
+
+        # IPv4链接
+        local vless_link_ipv4="vless://$uuid@$server_ipv4:$port?encryption=none&security=reality&sni=$dest_domain&fp=chrome&pbk=$public_key&sid=${short_ids[0]}&type=http&path=%2F&host=$dest_domain#VLESS-HTTP2-REALITY-User$user_num-IPv4"
+
+        share_links+="用户$user_num IPv4链接:\n$vless_link_ipv4\n\n"
+
+        # IPv6链接（如果支持）
+        if [[ -n "$server_ipv6" ]]; then
+            local vless_link_ipv6="vless://$uuid@[$server_ipv6]:$port?encryption=none&security=reality&sni=$dest_domain&fp=chrome&pbk=$public_key&sid=${short_ids[0]}&type=http&path=%2F&host=$dest_domain#VLESS-HTTP2-REALITY-User$user_num-IPv6"
+            share_links+="用户$user_num IPv6链接:\n$vless_link_ipv6\n\n"
+        fi
+
+        # 手动配置信息
+        client_configs+="## 用户$user_num 配置信息\n"
+        client_configs+="协议: VLESS\n"
+        client_configs+="IPv4地址: $server_ipv4\n"
+        [[ -n "$server_ipv6" ]] && client_configs+="IPv6地址: $server_ipv6\n"
+        client_configs+="端口: $port\n"
+        client_configs+="用户ID: $uuid\n"
+        client_configs+="流控: 无\n"
+        client_configs+="传输协议: HTTP/2\n"
+        client_configs+="传输层安全: REALITY\n"
+        client_configs+="SNI: $dest_domain\n"
+        client_configs+="Fingerprint: chrome\n"
+        client_configs+="PublicKey: $public_key\n"
+        client_configs+="ShortId: ${short_ids[0]}\n"
+        client_configs+="Path: /\n"
+        client_configs+="Host: $dest_domain\n\n"
+    done
 
     echo
     print_message "$YELLOW" "分享链接:"
-    echo "$vless_link"
+    echo -e "$share_links"
 
     # 保存到文件
-    cat > /root/vless-client-config.txt << EOF
-# vless+reality客户端配置
+    cat > /root/vless-http2-client-config.txt << EOF
+# VLESS-HTTP2-REALITY客户端配置
 
-## 手动配置信息
-协议: VLESS
-地址: $server_ip
-端口: $port
-用户ID: $uuid
-流控: xtls-rprx-vision
-传输协议: $transport
-传输层安全: reality
-SNI: $dest_domain
-Fingerprint: chrome
-PublicKey: $public_key
-ShortId: $short_id
-SpiderX: /
+$client_configs
 
 ## 分享链接
-$vless_link
+$share_links
 
-## 使用说明
-1. 复制分享链接到支持vless+reality的客户端
-2. 或者手动填入上述配置信息
-3. 推荐客户端: v2rayN, Clash Meta, sing-box
+## 高级配置选项
+可用短ID: ${short_ids[*]}
+备用伪装域名: www.cloudflare.com, www.apple.com
+
+## 客户端推荐设置
+- 传输协议: HTTP/2
+- 多路复用: 启用
+- 连接复用: 启用
+- 域名策略: AsIs
+- 路由规则: 绕过局域网和中国大陆
+
+## 支持的客户端
+1. v2rayN (Windows) - 完全支持
+2. v2rayNG (Android) - 完全支持
+3. Clash Meta - 支持
+4. sing-box - 完全支持
+5. Shadowrocket (iOS) - 支持
+
+## 性能优化建议
+1. 优先使用IPv4连接（兼容性更好）
+2. 如网络支持IPv6且速度更快，可使用IPv6连接
+3. 建议在客户端启用HTTP/2多路复用
+4. 可根据网络情况调整短ID
 
 配置生成时间: $(date)
 EOF
 
-    print_message "$GREEN" "客户端配置已保存到: /root/vless-client-config.txt"
-    log_message "生成vless+reality客户端配置"
+    print_message "$GREEN" "客户端配置已保存到: /root/vless-http2-client-config.txt"
+    log_message "生成VLESS-HTTP2-REALITY客户端配置"
 }
 
 # sing-box安装
@@ -3326,7 +3475,7 @@ show_menu() {
     echo "16. 3X-UI面板"
     echo "17. Sub-Store服务"
     echo "18. Nginx分流配置"
-    echo "19. 配置vless+reality代理"
+    echo "19. 配置VLESS-HTTP2-REALITY代理"
     echo "20. sing-box安装"
     echo "21. 代理服务管理"
     echo ""
