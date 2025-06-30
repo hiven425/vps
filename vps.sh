@@ -2948,8 +2948,9 @@ vless_install_configure() {
 
     else
         print_message "$RED" "VLESS-HTTP2-REALITY服务启动失败"
-        print_message "$YELLOW" "查看错误日志:"
-        journalctl -u xray --no-pager -l | tail -20
+
+        # 自动诊断配置问题
+        diagnose_xray_config
         return 1
     fi
 }
@@ -3100,10 +3101,9 @@ vless_restart_service() {
     else
         print_message "$RED" "✗ Xray服务重启失败"
 
-        # 显示错误日志
+        # 自动诊断配置问题
         echo
-        print_message "$YELLOW" "错误日志:"
-        journalctl -u xray --no-pager -l | tail -15
+        diagnose_xray_config
     fi
 }
 
@@ -3571,6 +3571,135 @@ vless_restore_config() {
     fi
 }
 
+# 诊断Xray配置问题
+diagnose_xray_config() {
+    print_message "$BLUE" "🔍 自动诊断Xray配置问题..."
+    echo
+
+    # 检查配置文件是否存在
+    if [[ ! -f "/usr/local/etc/xray/config.json" ]]; then
+        print_message "$RED" "✗ 配置文件不存在: /usr/local/etc/xray/config.json"
+        return 1
+    fi
+
+    print_message "$GREEN" "✓ 配置文件存在"
+
+    # 检查配置文件语法
+    print_message "$YELLOW" "检查配置文件语法..."
+    if command -v xray &> /dev/null; then
+        local test_output=$(xray test -config /usr/local/etc/xray/config.json 2>&1)
+        if [[ $? -eq 0 ]]; then
+            print_message "$GREEN" "✓ 配置文件语法正确"
+        else
+            print_message "$RED" "✗ 配置文件语法错误:"
+            echo "$test_output" | head -10
+            echo
+            print_message "$YELLOW" "💡 常见问题和解决方案:"
+            echo "1. JSON格式错误 - 检查括号、逗号、引号是否匹配"
+            echo "2. 字段名错误 - 确认使用正确的字段名称"
+            echo "3. 值类型错误 - 检查数字、字符串、布尔值类型"
+            echo "4. 缺少必需字段 - 确认所有必需字段都已配置"
+            return 1
+        fi
+    else
+        print_message "$YELLOW" "⚠ 无法验证语法 (xray命令不可用)"
+    fi
+
+    # 检查JSON格式
+    print_message "$YELLOW" "检查JSON格式..."
+    if command -v jq &> /dev/null; then
+        if jq . /usr/local/etc/xray/config.json >/dev/null 2>&1; then
+            print_message "$GREEN" "✓ JSON格式正确"
+        else
+            print_message "$RED" "✗ JSON格式错误"
+            jq . /usr/local/etc/xray/config.json 2>&1 | head -5
+            return 1
+        fi
+    else
+        print_message "$YELLOW" "⚠ 跳过JSON格式检查 (jq不可用)"
+    fi
+
+    # 检查关键配置项
+    print_message "$YELLOW" "检查关键配置项..."
+    local config_issues=()
+
+    # 检查inbounds
+    local inbounds_count=$(jq '.inbounds | length' /usr/local/etc/xray/config.json 2>/dev/null)
+    if [[ "$inbounds_count" == "0" ]] || [[ -z "$inbounds_count" ]]; then
+        config_issues+=("缺少inbounds配置")
+    else
+        print_message "$GREEN" "✓ inbounds配置存在 ($inbounds_count个)"
+    fi
+
+    # 检查outbounds
+    local outbounds_count=$(jq '.outbounds | length' /usr/local/etc/xray/config.json 2>/dev/null)
+    if [[ "$outbounds_count" == "0" ]] || [[ -z "$outbounds_count" ]]; then
+        config_issues+=("缺少outbounds配置")
+    else
+        print_message "$GREEN" "✓ outbounds配置存在 ($outbounds_count个)"
+    fi
+
+    # 检查VLESS协议
+    local vless_protocol=$(jq -r '.inbounds[0].protocol' /usr/local/etc/xray/config.json 2>/dev/null)
+    if [[ "$vless_protocol" == "vless" ]]; then
+        print_message "$GREEN" "✓ VLESS协议配置正确"
+    else
+        config_issues+=("VLESS协议配置错误: $vless_protocol")
+    fi
+
+    # 检查REALITY配置
+    local reality_security=$(jq -r '.inbounds[0].streamSettings.security' /usr/local/etc/xray/config.json 2>/dev/null)
+    if [[ "$reality_security" == "reality" ]]; then
+        print_message "$GREEN" "✓ REALITY安全配置正确"
+    else
+        config_issues+=("REALITY安全配置错误: $reality_security")
+    fi
+
+    # 检查HTTP/2配置
+    local network_type=$(jq -r '.inbounds[0].streamSettings.network' /usr/local/etc/xray/config.json 2>/dev/null)
+    if [[ "$network_type" == "h2" ]]; then
+        print_message "$GREEN" "✓ HTTP/2网络配置正确"
+    else
+        config_issues+=("HTTP/2网络配置错误: $network_type")
+    fi
+
+    # 显示配置问题
+    if [[ ${#config_issues[@]} -gt 0 ]]; then
+        echo
+        print_message "$RED" "发现配置问题:"
+        for issue in "${config_issues[@]}"; do
+            echo "  ✗ $issue"
+        done
+    fi
+
+    # 显示系统日志
+    echo
+    print_message "$YELLOW" "📋 系统日志 (最近10行):"
+    journalctl -u xray --no-pager -l | tail -10
+
+    # 检查端口占用
+    echo
+    print_message "$YELLOW" "🌐 检查端口占用:"
+    local port=$(jq -r '.inbounds[0].port' /usr/local/etc/xray/config.json 2>/dev/null)
+    if [[ -n "$port" ]] && [[ "$port" != "null" ]]; then
+        local port_usage=$(ss -tlnp | grep ":$port ")
+        if [[ -n "$port_usage" ]]; then
+            print_message "$YELLOW" "端口 $port 使用情况:"
+            echo "$port_usage"
+        else
+            print_message "$GREEN" "✓ 端口 $port 未被占用"
+        fi
+    fi
+
+    # 提供修复建议
+    echo
+    print_message "$CYAN" "🛠️ 修复建议:"
+    echo "1. 重新运行配置: 选择菜单选项19重新配置"
+    echo "2. 检查配置文件: 手动编辑 /usr/local/etc/xray/config.json"
+    echo "3. 查看完整日志: journalctl -u xray -f"
+    echo "4. 重置配置: 删除配置文件后重新配置"
+}
+
 # 安装Xray核心
 install_xray_core() {
     # 下载并安装Xray
@@ -3609,7 +3738,7 @@ generate_vless_http2_config() {
     # 创建配置目录
     mkdir -p /usr/local/etc/xray
 
-    # 构建客户端配置
+    # 构建客户端配置 (HTTP/2不需要flow字段)
     local clients_config=""
     for uuid in "${user_uuids[@]}"; do
         if [[ -n "$clients_config" ]]; then
@@ -3617,8 +3746,7 @@ generate_vless_http2_config() {
         fi
         clients_config+="
                     {
-                        \"id\": \"$uuid\",
-                        \"flow\": \"\"
+                        \"id\": \"$uuid\"
                     }"
     done
 
@@ -3631,12 +3759,10 @@ generate_vless_http2_config() {
         short_ids_config+="\"$short_id\""
     done
 
-    # 构建监听地址配置
+    # 构建监听地址配置 (新版Xray兼容格式)
     local listen_config=""
     if [[ "$ipv6_support" == true ]]; then
         listen_config="\"listen\": \"::\","
-    else
-        listen_config="\"listen\": \"0.0.0.0\","
     fi
 
     # 生成服务器配置
@@ -3672,12 +3798,9 @@ generate_vless_http2_config() {
                         $short_ids_config
                     ]
                 },
-                "httpSettings": {
+                "h2Settings": {
                     "path": "/",
-                    "method": "GET",
-                    "headers": {
-                        "Host": ["$dest_domain"]
-                    }
+                    "host": ["$dest_domain"]
                 }
             },
             "sniffing": {
@@ -3711,6 +3834,19 @@ generate_vless_http2_config() {
     }
 }
 EOF
+
+    # 验证配置文件语法
+    print_message "$YELLOW" "验证配置文件语法..."
+    if command -v xray &> /dev/null; then
+        if xray test -config /usr/local/etc/xray/config.json; then
+            print_message "$GREEN" "✓ 配置文件语法正确"
+        else
+            print_message "$RED" "✗ 配置文件语法错误"
+            return 1
+        fi
+    else
+        print_message "$YELLOW" "跳过语法验证 (xray命令不可用)"
+    fi
 
     # 创建日志目录
     mkdir -p /var/log/xray
@@ -4010,8 +4146,8 @@ manage_proxy_service() {
                     else
                         print_message "$RED" "✗ Xray服务重启失败"
                         echo
-                        print_message "$YELLOW" "错误日志:"
-                        journalctl -u xray --no-pager -l | tail -15
+                        # 自动诊断配置问题
+                        diagnose_xray_config
                     fi
                 fi
                 ;;
