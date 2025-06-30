@@ -2841,6 +2841,46 @@ vless_install_configure() {
         return 1
     fi
 
+    # 检查端口占用
+    print_message "$YELLOW" "检查端口 $vless_port 占用情况..."
+    if netstat -tlnp | grep ":$vless_port " > /dev/null; then
+        print_message "$RED" "⚠️  端口 $vless_port 已被占用!"
+        echo "占用进程:"
+        netstat -tlnp | grep ":$vless_port "
+        echo ""
+
+        if confirm_action "是否强制释放端口 $vless_port?"; then
+            # 停止可能的xray服务
+            systemctl stop xray 2>/dev/null
+
+            # 查找并终止占用端口的进程
+            local pids=$(netstat -tlnp | grep ":$vless_port " | awk '{print $7}' | cut -d'/' -f1 | grep -v '-' | sort -u)
+            for pid in $pids; do
+                if [[ -n "$pid" && "$pid" != "-" ]]; then
+                    local process_name=$(ps -p "$pid" -o comm= 2>/dev/null)
+                    print_message "$YELLOW" "终止进程: $process_name (PID: $pid)"
+                    kill -9 "$pid" 2>/dev/null
+                fi
+            done
+
+            # 等待端口释放
+            sleep 3
+
+            # 再次检查
+            if netstat -tlnp | grep ":$vless_port " > /dev/null; then
+                print_message "$RED" "端口仍被占用，请手动处理或选择其他端口"
+                return 1
+            else
+                print_message "$GREEN" "✓ 端口 $vless_port 已释放"
+            fi
+        else
+            print_message "$YELLOW" "请选择其他端口或手动释放端口"
+            return 1
+        fi
+    else
+        print_message "$GREEN" "✓ 端口 $vless_port 可用"
+    fi
+
     # 检测IPv6支持
     local ipv6_support=false
     if ip -6 addr show | grep -q "inet6.*global"; then
@@ -3902,6 +3942,280 @@ EOF
 
     log_message "VLESS-HTTP2-REALITY配置文件已生成"
     return 0
+}
+
+# 更新用户UUID
+update_user_uuids() {
+    print_message "$BLUE" "=== 更新用户UUID ==="
+
+    if [[ ! -f "/usr/local/etc/xray/config.json" ]]; then
+        print_message "$RED" "未找到Xray配置文件"
+        return 1
+    fi
+
+    # 显示当前用户
+    print_message "$YELLOW" "当前用户列表:"
+    local current_uuids=($(jq -r '.inbounds[0].settings.clients[].id' /usr/local/etc/xray/config.json 2>/dev/null))
+    for i in "${!current_uuids[@]}"; do
+        echo "  用户$((i+1)): ${current_uuids[i]}"
+    done
+
+    echo ""
+    echo "选择操作："
+    echo "1. 添加新用户"
+    echo "2. 删除用户"
+    echo "3. 重新生成所有UUID"
+    echo "0. 返回"
+
+    read -p "请选择 [0-3]: " choice
+    case $choice in
+        1)
+            read -p "请输入新用户邮箱标识: " user_email
+            local new_uuid=$(uuidgen)
+
+            # 添加到配置文件
+            local new_client="{\"id\": \"$new_uuid\", \"email\": \"$user_email\"}"
+            jq ".inbounds[0].settings.clients += [$new_client]" /usr/local/etc/xray/config.json > /tmp/config_temp.json
+            mv /tmp/config_temp.json /usr/local/etc/xray/config.json
+
+            print_message "$GREEN" "✓ 新用户已添加: $new_uuid"
+            ;;
+        2)
+            if [[ ${#current_uuids[@]} -le 1 ]]; then
+                print_message "$RED" "至少需要保留一个用户"
+                return 1
+            fi
+
+            read -p "请输入要删除的用户编号 (1-${#current_uuids[@]}): " user_num
+            if [[ $user_num -ge 1 && $user_num -le ${#current_uuids[@]} ]]; then
+                local index=$((user_num-1))
+                jq "del(.inbounds[0].settings.clients[$index])" /usr/local/etc/xray/config.json > /tmp/config_temp.json
+                mv /tmp/config_temp.json /usr/local/etc/xray/config.json
+                print_message "$GREEN" "✓ 用户已删除"
+            else
+                print_message "$RED" "无效的用户编号"
+                return 1
+            fi
+            ;;
+        3)
+            read -p "请输入用户数量 (1-10): " user_count
+            if [[ $user_count -ge 1 && $user_count -le 10 ]]; then
+                local new_clients="["
+                for ((i=1; i<=user_count; i++)); do
+                    local uuid=$(uuidgen)
+                    [[ $i -gt 1 ]] && new_clients+=","
+                    new_clients+="{\"id\": \"$uuid\", \"email\": \"user$i@example.com\"}"
+                done
+                new_clients+="]"
+
+                jq ".inbounds[0].settings.clients = $new_clients" /usr/local/etc/xray/config.json > /tmp/config_temp.json
+                mv /tmp/config_temp.json /usr/local/etc/xray/config.json
+                print_message "$GREEN" "✓ 所有UUID已重新生成"
+            else
+                print_message "$RED" "无效的用户数量"
+                return 1
+            fi
+            ;;
+        0|*)
+            return 0
+            ;;
+    esac
+
+    # 重启服务并重新生成客户端配置
+    systemctl restart xray
+    if systemctl is-active --quiet xray; then
+        print_message "$GREEN" "✓ 服务重启成功"
+        regenerate_client_config
+    else
+        print_message "$RED" "✗ 服务重启失败"
+        return 1
+    fi
+}
+
+# 更改域名配置
+update_domain_config() {
+    print_message "$BLUE" "=== 更改域名配置 ==="
+
+    if [[ ! -f "/usr/local/etc/xray/config.json" ]]; then
+        print_message "$RED" "未找到Xray配置文件"
+        return 1
+    fi
+
+    local current_domain=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' /usr/local/etc/xray/config.json 2>/dev/null)
+    print_message "$YELLOW" "当前伪装域名: $current_domain"
+
+    echo ""
+    print_message "$YELLOW" "推荐伪装域名:"
+    echo "1. www.microsoft.com (推荐)"
+    echo "2. www.cloudflare.com"
+    echo "3. www.apple.com"
+    echo "4. 自定义域名"
+    echo "0. 取消"
+
+    read -p "请选择 [0-4]: " domain_choice
+
+    local new_domain=""
+    case $domain_choice in
+        1) new_domain="www.microsoft.com" ;;
+        2) new_domain="www.cloudflare.com" ;;
+        3) new_domain="www.apple.com" ;;
+        4)
+            read -p "请输入自定义域名: " new_domain
+            if [[ -z "$new_domain" ]]; then
+                print_message "$RED" "域名不能为空"
+                return 1
+            fi
+            ;;
+        0|*)
+            return 0
+            ;;
+    esac
+
+    # 更新配置文件中的域名
+    jq ".inbounds[0].streamSettings.realitySettings.serverNames = [\"$new_domain\"]" /usr/local/etc/xray/config.json > /tmp/config_temp.json
+    mv /tmp/config_temp.json /usr/local/etc/xray/config.json
+
+    jq ".inbounds[0].streamSettings.realitySettings.dest = \"$new_domain:443\"" /usr/local/etc/xray/config.json > /tmp/config_temp.json
+    mv /tmp/config_temp.json /usr/local/etc/xray/config.json
+
+    # 更新TCP设置中的Host
+    jq ".inbounds[0].streamSettings.tcpSettings.header.request.headers.Host = [\"$new_domain\"]" /usr/local/etc/xray/config.json > /tmp/config_temp.json
+    mv /tmp/config_temp.json /usr/local/etc/xray/config.json
+
+    print_message "$GREEN" "✓ 域名配置已更新: $new_domain"
+
+    # 重启服务并重新生成客户端配置
+    systemctl restart xray
+    if systemctl is-active --quiet xray; then
+        print_message "$GREEN" "✓ 服务重启成功"
+        regenerate_client_config
+    else
+        print_message "$RED" "✗ 服务重启失败"
+        return 1
+    fi
+}
+
+# 更换服务端口
+change_service_port() {
+    print_message "$BLUE" "=== 更换服务端口 ==="
+
+    if [[ ! -f "/usr/local/etc/xray/config.json" ]]; then
+        print_message "$RED" "未找到Xray配置文件"
+        return 1
+    fi
+
+    local current_port=$(jq -r '.inbounds[0].port' /usr/local/etc/xray/config.json 2>/dev/null)
+    print_message "$YELLOW" "当前端口: $current_port"
+
+    # 检查端口占用
+    print_message "$YELLOW" "检查端口占用情况..."
+    if netstat -tlnp | grep ":$current_port "; then
+        print_message "$RED" "当前端口 $current_port 被占用"
+        echo "占用进程:"
+        netstat -tlnp | grep ":$current_port "
+        echo ""
+
+        if confirm_action "是否强制停止占用进程?"; then
+            local pids=$(netstat -tlnp | grep ":$current_port " | awk '{print $7}' | cut -d'/' -f1 | grep -v '-')
+            for pid in $pids; do
+                if [[ -n "$pid" && "$pid" != "-" ]]; then
+                    print_message "$YELLOW" "停止进程 PID: $pid"
+                    kill -9 "$pid" 2>/dev/null
+                fi
+            done
+            sleep 2
+        fi
+    fi
+
+    echo ""
+    print_message "$YELLOW" "推荐端口:"
+    echo "1. 443 (HTTPS, 推荐)"
+    echo "2. 8443 (备用HTTPS)"
+    echo "3. 2053 (Cloudflare)"
+    echo "4. 2083 (Cloudflare SSL)"
+    echo "5. 自定义端口"
+    echo "0. 取消"
+
+    read -p "请选择 [0-5]: " port_choice
+
+    local new_port=""
+    case $port_choice in
+        1) new_port="443" ;;
+        2) new_port="8443" ;;
+        3) new_port="2053" ;;
+        4) new_port="2083" ;;
+        5)
+            read -p "请输入端口号 (1-65535): " new_port
+            if [[ ! "$new_port" =~ ^[0-9]+$ ]] || [[ $new_port -lt 1 ]] || [[ $new_port -gt 65535 ]]; then
+                print_message "$RED" "无效的端口号"
+                return 1
+            fi
+            ;;
+        0|*)
+            return 0
+            ;;
+    esac
+
+    # 检查新端口是否被占用
+    if netstat -tlnp | grep ":$new_port " > /dev/null; then
+        print_message "$RED" "端口 $new_port 已被占用"
+        netstat -tlnp | grep ":$new_port "
+        return 1
+    fi
+
+    # 停止当前服务
+    systemctl stop xray 2>/dev/null
+    sleep 2
+
+    # 更新配置文件中的端口
+    jq ".inbounds[0].port = $new_port" /usr/local/etc/xray/config.json > /tmp/config_temp.json
+    mv /tmp/config_temp.json /usr/local/etc/xray/config.json
+
+    # 更新防火墙规则
+    if command -v ufw &> /dev/null; then
+        ufw delete allow "$current_port" 2>/dev/null
+        ufw allow "$new_port" 2>/dev/null
+        print_message "$GREEN" "✓ 防火墙规则已更新"
+    fi
+
+    print_message "$GREEN" "✓ 端口配置已更新: $current_port -> $new_port"
+
+    # 重启服务并重新生成客户端配置
+    systemctl start xray
+    if systemctl is-active --quiet xray; then
+        print_message "$GREEN" "✓ 服务启动成功"
+        regenerate_client_config
+    else
+        print_message "$RED" "✗ 服务启动失败"
+        return 1
+    fi
+}
+
+# 重新生成客户端配置
+regenerate_client_config() {
+    print_message "$BLUE" "=== 重新生成客户端配置 ==="
+
+    if [[ ! -f "/usr/local/etc/xray/config.json" ]]; then
+        print_message "$RED" "未找到Xray配置文件"
+        return 1
+    fi
+
+    # 读取当前配置
+    local port=$(jq -r '.inbounds[0].port' /usr/local/etc/xray/config.json)
+    local dest_domain=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' /usr/local/etc/xray/config.json)
+    local user_uuids=($(jq -r '.inbounds[0].settings.clients[].id' /usr/local/etc/xray/config.json))
+
+    # 备份旧配置
+    if [[ -f "/root/vless-http2-client-config.txt" ]]; then
+        mv "/root/vless-http2-client-config.txt" "/root/vless-http2-client-config.txt.backup-$(date +%Y%m%d-%H%M%S)"
+        print_message "$YELLOW" "已备份旧的客户端配置"
+    fi
+
+    # 生成新配置
+    generate_http2_client_config "$port" "$dest_domain" "${user_uuids[@]}"
+
+    print_message "$GREEN" "✓ 客户端配置已重新生成"
+    print_message "$YELLOW" "旧的订阅链接已失效，请使用新生成的配置"
 }
 
 # 生成HTTP/2客户端配置
