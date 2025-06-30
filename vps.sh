@@ -3655,12 +3655,20 @@ diagnose_xray_config() {
         config_issues+=("REALITY安全配置错误: $reality_security")
     fi
 
-    # 检查HTTP/2配置
+    # 检查网络配置
     local network_type=$(jq -r '.inbounds[0].streamSettings.network' /usr/local/etc/xray/config.json 2>/dev/null)
-    if [[ "$network_type" == "h2" ]]; then
-        print_message "$GREEN" "✓ HTTP/2网络配置正确"
+    if [[ "$network_type" == "tcp" ]]; then
+        print_message "$GREEN" "✓ TCP网络配置正确"
+
+        # 检查TCP伪装配置
+        local header_type=$(jq -r '.inbounds[0].streamSettings.tcpSettings.header.type' /usr/local/etc/xray/config.json 2>/dev/null)
+        if [[ "$header_type" == "http" ]]; then
+            print_message "$GREEN" "✓ HTTP伪装配置正确"
+        else
+            config_issues+=("HTTP伪装配置错误: $header_type")
+        fi
     else
-        config_issues+=("HTTP/2网络配置错误: $network_type")
+        config_issues+=("网络配置错误: $network_type (应为tcp)")
     fi
 
     # 显示配置问题
@@ -3784,7 +3792,7 @@ generate_vless_http2_config() {
                 "decryption": "none"
             },
             "streamSettings": {
-                "network": "h2",
+                "network": "tcp",
                 "security": "reality",
                 "realitySettings": {
                     "show": false,
@@ -3798,9 +3806,25 @@ generate_vless_http2_config() {
                         $short_ids_config
                     ]
                 },
-                "h2Settings": {
-                    "path": "/",
-                    "host": ["$dest_domain"]
+                "tcpSettings": {
+                    "header": {
+                        "type": "http",
+                        "request": {
+                            "version": "1.1",
+                            "method": "GET",
+                            "path": ["/"],
+                            "headers": {
+                                "Host": ["$dest_domain"],
+                                "User-Agent": [
+                                    "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/53.0.2785.143 Safari/537.36",
+                                    "Mozilla/5.0 (iPhone; CPU iPhone OS 10_0_2 like Mac OS X) AppleWebKit/601.1 (KHTML, like Gecko) CriOS/53.0.2785.109 Mobile/14A456 Safari/601.1.46"
+                                ],
+                                "Accept-Encoding": ["gzip, deflate"],
+                                "Connection": ["keep-alive"],
+                                "Pragma": "no-cache"
+                            }
+                        }
+                    }
                 }
             },
             "sniffing": {
@@ -3892,13 +3916,14 @@ generate_http2_client_config() {
     local public_key=$(grep "公钥:" /root/vless-http2-reality-config.txt | cut -d' ' -f2)
     local short_ids=($(grep "短ID列表:" /root/vless-http2-reality-config.txt | cut -d' ' -f2-))
 
-    print_message "$GREEN" "VLESS-HTTP2-REALITY客户端配置:"
+    print_message "$GREEN" "VLESS-TCP-HTTP-REALITY客户端配置:"
     echo "=================================================="
     echo "协议: VLESS"
     echo "IPv4地址: $server_ipv4"
     [[ -n "$server_ipv6" ]] && echo "IPv6地址: [$server_ipv6]"
     echo "端口: $port"
-    echo "传输协议: HTTP/2"
+    echo "传输协议: TCP"
+    echo "伪装类型: HTTP"
     echo "传输层安全: REALITY"
     echo "SNI: $dest_domain"
     echo "Fingerprint: chrome"
@@ -3917,13 +3942,13 @@ generate_http2_client_config() {
         local user_num=$((i+1))
 
         # IPv4链接
-        local vless_link_ipv4="vless://$uuid@$server_ipv4:$port?encryption=none&security=reality&sni=$dest_domain&fp=chrome&pbk=$public_key&sid=${short_ids[0]}&type=http&path=%2F&host=$dest_domain#VLESS-HTTP2-REALITY-User$user_num-IPv4"
+        local vless_link_ipv4="vless://$uuid@$server_ipv4:$port?encryption=none&security=reality&sni=$dest_domain&fp=chrome&pbk=$public_key&sid=${short_ids[0]}&type=tcp&headerType=http&path=%2F&host=$dest_domain#VLESS-TCP-HTTP-REALITY-User$user_num-IPv4"
 
         share_links+="用户$user_num IPv4链接:\n$vless_link_ipv4\n\n"
 
         # IPv6链接（如果支持）
         if [[ -n "$server_ipv6" ]]; then
-            local vless_link_ipv6="vless://$uuid@[$server_ipv6]:$port?encryption=none&security=reality&sni=$dest_domain&fp=chrome&pbk=$public_key&sid=${short_ids[0]}&type=http&path=%2F&host=$dest_domain#VLESS-HTTP2-REALITY-User$user_num-IPv6"
+            local vless_link_ipv6="vless://$uuid@[$server_ipv6]:$port?encryption=none&security=reality&sni=$dest_domain&fp=chrome&pbk=$public_key&sid=${short_ids[0]}&type=tcp&headerType=http&path=%2F&host=$dest_domain#VLESS-TCP-HTTP-REALITY-User$user_num-IPv6"
             share_links+="用户$user_num IPv6链接:\n$vless_link_ipv6\n\n"
         fi
 
@@ -3935,7 +3960,8 @@ generate_http2_client_config() {
         client_configs+="端口: $port\n"
         client_configs+="用户ID: $uuid\n"
         client_configs+="流控: 无\n"
-        client_configs+="传输协议: HTTP/2\n"
+        client_configs+="传输协议: TCP\n"
+        client_configs+="伪装类型: HTTP\n"
         client_configs+="传输层安全: REALITY\n"
         client_configs+="SNI: $dest_domain\n"
         client_configs+="Fingerprint: chrome\n"
@@ -3951,7 +3977,7 @@ generate_http2_client_config() {
 
     # 保存到文件
     cat > /root/vless-http2-client-config.txt << EOF
-# VLESS-HTTP2-REALITY客户端配置
+# VLESS-TCP-HTTP-REALITY客户端配置
 
 $client_configs
 
@@ -3963,8 +3989,8 @@ $share_links
 备用伪装域名: www.cloudflare.com, www.apple.com
 
 ## 客户端推荐设置
-- 传输协议: HTTP/2
-- 多路复用: 启用
+- 传输协议: TCP
+- 伪装类型: HTTP
 - 连接复用: 启用
 - 域名策略: AsIs
 - 路由规则: 绕过局域网和中国大陆
@@ -3979,7 +4005,7 @@ $share_links
 ## 性能优化建议
 1. 优先使用IPv4连接（兼容性更好）
 2. 如网络支持IPv6且速度更快，可使用IPv6连接
-3. 建议在客户端启用HTTP/2多路复用
+3. TCP+HTTP伪装提供良好的兼容性和性能
 4. 可根据网络情况调整短ID
 
 配置生成时间: $(date)
