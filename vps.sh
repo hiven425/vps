@@ -2662,9 +2662,96 @@ security_validation() {
     fi
 }
 
-# 配置VLESS-HTTP2-REALITY代理
+# VLESS-HTTP2-REALITY管理中心
 install_vless_reality() {
-    print_message "$BLUE" "=== 配置VLESS-HTTP2-REALITY代理 ==="
+    while true; do
+        clear
+        print_message "$BLUE" "=================================="
+        print_message "$BLUE" "   VLESS-HTTP2-REALITY管理中心"
+        print_message "$BLUE" "=================================="
+        echo
+
+        # 检测当前状态
+        local xray_installed=false
+        local xray_running=false
+        local config_exists=false
+
+        if command -v xray &> /dev/null || [[ -f "/usr/local/bin/xray" ]]; then
+            xray_installed=true
+        fi
+
+        if systemctl is-active --quiet xray 2>/dev/null; then
+            xray_running=true
+        fi
+
+        if [[ -f "/usr/local/etc/xray/config.json" ]]; then
+            config_exists=true
+        fi
+
+        # 显示当前状态
+        print_message "$CYAN" "📊 当前状态:"
+        printf "   Xray核心: "
+        if [[ "$xray_installed" == true ]]; then
+            print_colored "$GREEN" "✓ 已安装"
+        else
+            print_colored "$RED" "✗ 未安装"
+        fi
+
+        printf "   服务状态: "
+        if [[ "$xray_running" == true ]]; then
+            print_colored "$GREEN" "✓ 运行中"
+        else
+            print_colored "$RED" "✗ 未运行"
+        fi
+
+        printf "   配置文件: "
+        if [[ "$config_exists" == true ]]; then
+            print_colored "$GREEN" "✓ 存在"
+        else
+            print_colored "$RED" "✗ 不存在"
+        fi
+        echo
+
+        # 显示菜单
+        print_message "$YELLOW" "🛠️  管理选项:"
+        echo "1. 安装/配置新服务"
+        echo "2. 查看服务状态"
+        echo "3. 查看客户端配置"
+        echo "4. 添加用户"
+        echo "5. 删除用户"
+        echo "6. 重启服务"
+        echo "7. 卸载服务"
+        echo "8. 备份配置"
+        echo "9. 恢复配置"
+        echo "0. 返回主菜单"
+        echo
+
+        read -p "请选择操作 (0-9): " vless_choice
+
+        case $vless_choice in
+            1) vless_install_configure ;;
+            2) vless_show_status ;;
+            3) vless_show_client_config ;;
+            4) vless_add_user ;;
+            5) vless_remove_user ;;
+            6) vless_restart_service ;;
+            7) vless_uninstall_service ;;
+            8) vless_backup_config ;;
+            9) vless_restore_config ;;
+            0) break ;;
+            *) print_message "$RED" "无效选择，请重新输入" ;;
+        esac
+
+        if [[ "$vless_choice" != "0" ]]; then
+            echo
+            read -p "按回车键继续..." -r
+        fi
+    done
+}
+
+# 安装/配置新服务
+vless_install_configure() {
+    print_message "$BLUE" "=== 安装/配置VLESS-HTTP2-REALITY服务 ==="
 
     # 检查系统要求
     if ! command -v curl &> /dev/null; then
@@ -2672,12 +2759,64 @@ install_vless_reality() {
         apt update && apt install -y curl
     fi
 
-    # 检查是否已安装
-    if [[ -f "/usr/local/bin/xray" ]] || [[ -f "/etc/systemd/system/xray.service" ]]; then
-        print_message "$YELLOW" "检测到已安装的代理服务"
-        if ! confirm_action "是否重新配置?"; then
+    # 智能检测现有安装
+    local xray_installed=false
+    local install_method=""
+
+    if command -v xray &> /dev/null; then
+        xray_installed=true
+        install_method="系统PATH"
+    elif [[ -f "/usr/local/bin/xray" ]]; then
+        xray_installed=true
+        install_method="官方脚本"
+    elif [[ -f "/usr/bin/xray" ]]; then
+        xray_installed=true
+        install_method="包管理器"
+    fi
+
+    if [[ "$xray_installed" == true ]]; then
+        print_message "$GREEN" "检测到已安装的Xray核心 (安装方式: $install_method)"
+        local xray_version=$(xray version 2>/dev/null | head -1 || echo "未知版本")
+        echo "当前版本: $xray_version"
+        echo
+
+        print_message "$YELLOW" "安装选项:"
+        echo "1. 使用现有Xray核心"
+        echo "2. 重新安装Xray核心"
+        echo "3. 取消操作"
+        read -p "请选择 (1-3): " install_choice
+
+        case $install_choice in
+            1) print_message "$GREEN" "使用现有Xray核心" ;;
+            2)
+                print_message "$YELLOW" "重新安装Xray核心..."
+                if ! install_xray_core; then
+                    print_message "$RED" "Xray安装失败"
+                    return 1
+                fi
+                ;;
+            3) return 0 ;;
+            *) print_message "$RED" "无效选择"; return 1 ;;
+        esac
+    else
+        print_message "$YELLOW" "未检测到Xray核心，开始安装..."
+        if ! install_xray_core; then
+            print_message "$RED" "Xray安装失败"
+            return 1
+        fi
+    fi
+
+    # 检查现有配置
+    if [[ -f "/usr/local/etc/xray/config.json" ]]; then
+        print_message "$YELLOW" "检测到现有配置文件"
+        if ! confirm_action "是否覆盖现有配置?"; then
             return 0
         fi
+
+        # 备份现有配置
+        local backup_file="/usr/local/etc/xray/config.json.backup-$(date +%Y%m%d-%H%M%S)"
+        cp "/usr/local/etc/xray/config.json" "$backup_file"
+        print_message "$GREEN" "已备份现有配置到: $backup_file"
     fi
 
     print_message "$YELLOW" "VLESS-HTTP2-REALITY配置特性:"
@@ -2777,13 +2916,6 @@ install_vless_reality() {
 
     log_message "开始配置VLESS-HTTP2-REALITY代理"
 
-    # 安装Xray
-    print_message "$YELLOW" "安装Xray核心..."
-    if ! install_xray_core; then
-        print_message "$RED" "Xray安装失败"
-        return 1
-    fi
-
     # 生成配置文件
     print_message "$YELLOW" "生成HTTP/2配置文件..."
     if ! generate_vless_http2_config "$vless_port" "$dest_domain" "$ipv6_support" "${user_uuids[@]}"; then
@@ -2819,6 +2951,623 @@ install_vless_reality() {
         print_message "$YELLOW" "查看错误日志:"
         journalctl -u xray --no-pager -l | tail -20
         return 1
+    fi
+}
+
+# 查看服务状态
+vless_show_status() {
+    print_message "$BLUE" "=== VLESS-HTTP2-REALITY服务状态 ==="
+
+    # 检查Xray安装
+    if ! command -v xray &> /dev/null && [[ ! -f "/usr/local/bin/xray" ]]; then
+        print_message "$RED" "Xray核心未安装"
+        return 1
+    fi
+
+    # 检查配置文件
+    if [[ ! -f "/usr/local/etc/xray/config.json" ]]; then
+        print_message "$RED" "配置文件不存在: /usr/local/etc/xray/config.json"
+        return 1
+    fi
+
+    # 显示服务状态
+    print_message "$YELLOW" "📊 服务状态:"
+    if systemctl is-active --quiet xray; then
+        print_colored "$GREEN" "✓ Xray服务运行中"
+
+        # 显示详细状态
+        echo
+        print_message "$CYAN" "🔍 详细状态信息:"
+        systemctl status xray --no-pager -l | head -15
+
+        # 显示监听端口
+        echo
+        print_message "$CYAN" "🌐 监听端口:"
+        local ports=$(ss -tlnp | grep xray | awk '{print $4}' | cut -d':' -f2 | sort -u)
+        if [[ -n "$ports" ]]; then
+            for port in $ports; do
+                echo "  端口 $port: 监听中"
+            done
+        else
+            print_message "$YELLOW" "未检测到监听端口"
+        fi
+
+        # 显示连接统计
+        echo
+        print_message "$CYAN" "📈 连接统计:"
+        local connections=$(ss -tn | grep ":$(echo $ports | head -1)" | wc -l)
+        echo "  当前连接数: $connections"
+
+    else
+        print_colored "$RED" "✗ Xray服务未运行"
+
+        # 显示错误信息
+        echo
+        print_message "$YELLOW" "🔍 错误日志 (最近10行):"
+        journalctl -u xray --no-pager -l | tail -10
+    fi
+
+    # 显示配置信息
+    echo
+    print_message "$CYAN" "⚙️ 配置信息:"
+    if [[ -f "/root/vless-http2-reality-config.txt" ]]; then
+        cat /root/vless-http2-reality-config.txt
+    else
+        print_message "$YELLOW" "配置信息文件不存在"
+    fi
+
+    # 显示日志文件大小
+    echo
+    print_message "$CYAN" "📝 日志文件:"
+    if [[ -f "/var/log/xray/access.log" ]]; then
+        local access_size=$(du -h /var/log/xray/access.log | cut -f1)
+        echo "  访问日志: $access_size"
+    fi
+    if [[ -f "/var/log/xray/error.log" ]]; then
+        local error_size=$(du -h /var/log/xray/error.log | cut -f1)
+        echo "  错误日志: $error_size"
+    fi
+}
+
+# 查看客户端配置
+vless_show_client_config() {
+    print_message "$BLUE" "=== 客户端配置信息 ==="
+
+    # 检查配置文件
+    if [[ -f "/root/vless-http2-client-config.txt" ]]; then
+        print_message "$GREEN" "📱 客户端配置文件:"
+        echo "文件位置: /root/vless-http2-client-config.txt"
+        echo
+        cat /root/vless-http2-client-config.txt
+    elif [[ -f "/root/vless-client-config.txt" ]]; then
+        print_message "$GREEN" "📱 客户端配置文件 (旧版):"
+        echo "文件位置: /root/vless-client-config.txt"
+        echo
+        cat /root/vless-client-config.txt
+    else
+        print_message "$RED" "未找到客户端配置文件"
+        print_message "$YELLOW" "请先配置VLESS服务"
+        return 1
+    fi
+
+    # 提供二维码生成选项
+    echo
+    if confirm_action "是否生成分享链接二维码?"; then
+        if command -v qrencode &> /dev/null; then
+            local share_links=$(grep "vless://" /root/vless-http2-client-config.txt 2>/dev/null || grep "vless://" /root/vless-client-config.txt 2>/dev/null)
+            if [[ -n "$share_links" ]]; then
+                echo "$share_links" | while read link; do
+                    if [[ -n "$link" ]]; then
+                        echo
+                        echo "二维码:"
+                        echo "$link" | qrencode -t UTF8
+                        echo
+                    fi
+                done
+            fi
+        else
+            print_message "$YELLOW" "qrencode未安装，无法生成二维码"
+            if confirm_action "是否安装qrencode?"; then
+                apt update && apt install -y qrencode
+                print_message "$GREEN" "qrencode安装完成，请重新选择此选项"
+            fi
+        fi
+    fi
+}
+
+# 重启服务
+vless_restart_service() {
+    print_message "$BLUE" "=== 重启VLESS服务 ==="
+
+    if ! systemctl is-enabled --quiet xray; then
+        print_message "$YELLOW" "Xray服务未启用，正在启用..."
+        systemctl enable xray
+    fi
+
+    print_message "$YELLOW" "正在重启Xray服务..."
+    systemctl restart xray
+
+    # 等待服务启动
+    sleep 3
+
+    if systemctl is-active --quiet xray; then
+        print_message "$GREEN" "✓ Xray服务重启成功"
+
+        # 显示服务状态
+        echo
+        print_message "$CYAN" "服务状态:"
+        systemctl status xray --no-pager -l | head -10
+    else
+        print_message "$RED" "✗ Xray服务重启失败"
+
+        # 显示错误日志
+        echo
+        print_message "$YELLOW" "错误日志:"
+        journalctl -u xray --no-pager -l | tail -15
+    fi
+}
+
+# 添加用户
+vless_add_user() {
+    print_message "$BLUE" "=== 添加VLESS用户 ==="
+
+    # 检查jq工具
+    if ! command -v jq &> /dev/null; then
+        print_message "$YELLOW" "安装jq工具..."
+        apt update && apt install -y jq
+        if ! command -v jq &> /dev/null; then
+            print_message "$RED" "jq安装失败，无法管理用户"
+            return 1
+        fi
+    fi
+
+    # 检查配置文件
+    if [[ ! -f "/usr/local/etc/xray/config.json" ]]; then
+        print_message "$RED" "配置文件不存在，请先配置VLESS服务"
+        return 1
+    fi
+
+    # 检查服务状态
+    if ! systemctl is-active --quiet xray; then
+        print_message "$RED" "Xray服务未运行，请先启动服务"
+        return 1
+    fi
+
+    # 显示当前用户
+    print_message "$CYAN" "📋 当前用户列表:"
+    local current_users=$(jq -r '.inbounds[0].settings.clients[].id' /usr/local/etc/xray/config.json 2>/dev/null)
+    local user_count=0
+    if [[ -n "$current_users" ]]; then
+        echo "$current_users" | while read uuid; do
+            ((user_count++))
+            echo "  用户$user_count: $uuid"
+        done
+        user_count=$(echo "$current_users" | wc -l)
+    else
+        echo "  无用户"
+    fi
+
+    if [[ $user_count -ge 10 ]]; then
+        print_message "$RED" "用户数量已达上限(10个)"
+        return 1
+    fi
+
+    echo
+    read -p "请输入新用户备注名 (可选): " user_remark
+    read -p "请输入用户UUID (留空自动生成): " new_uuid
+
+    if [[ -z "$new_uuid" ]]; then
+        if command -v uuidgen &> /dev/null; then
+            new_uuid=$(uuidgen)
+        else
+            new_uuid=$(cat /proc/sys/kernel/random/uuid)
+        fi
+    fi
+
+    # 验证UUID格式
+    if [[ ! "$new_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+        print_message "$RED" "无效的UUID格式"
+        return 1
+    fi
+
+    # 检查UUID是否已存在
+    if echo "$current_users" | grep -q "$new_uuid"; then
+        print_message "$RED" "UUID已存在"
+        return 1
+    fi
+
+    print_message "$YELLOW" "新用户信息:"
+    echo "备注名: ${user_remark:-"无"}"
+    echo "UUID: $new_uuid"
+    echo
+
+    if ! confirm_action "确认添加此用户?"; then
+        return 0
+    fi
+
+    # 备份配置
+    cp /usr/local/etc/xray/config.json /usr/local/etc/xray/config.json.backup-$(date +%Y%m%d-%H%M%S)
+
+    # 添加用户到配置文件
+    local new_client="{\"id\": \"$new_uuid\", \"flow\": \"\"}"
+    jq ".inbounds[0].settings.clients += [$new_client]" /usr/local/etc/xray/config.json > /tmp/xray_config_new.json
+
+    if [[ $? -eq 0 ]]; then
+        mv /tmp/xray_config_new.json /usr/local/etc/xray/config.json
+
+        # 重启服务
+        print_message "$YELLOW" "重启服务以应用配置..."
+        systemctl restart xray
+
+        if systemctl is-active --quiet xray; then
+            print_message "$GREEN" "✓ 用户添加成功"
+
+            # 更新客户端配置文件
+            local server_ipv4=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+            local server_ipv6=$(curl -s -6 ifconfig.me 2>/dev/null || ip -6 addr show | grep 'inet6.*global' | head -1 | awk '{print $2}' | cut -d'/' -f1)
+            local port=$(jq -r '.inbounds[0].port' /usr/local/etc/xray/config.json)
+            local dest_domain=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' /usr/local/etc/xray/config.json)
+            local public_key=$(grep "公钥:" /root/vless-http2-reality-config.txt | cut -d' ' -f2)
+            local short_id=$(jq -r '.inbounds[0].streamSettings.realitySettings.shortIds[0]' /usr/local/etc/xray/config.json)
+
+            # 生成新用户的分享链接
+            local vless_link_ipv4="vless://$new_uuid@$server_ipv4:$port?encryption=none&security=reality&sni=$dest_domain&fp=chrome&pbk=$public_key&sid=$short_id&type=http&path=%2F&host=$dest_domain#VLESS-HTTP2-REALITY-${user_remark:-"NewUser"}-IPv4"
+
+            echo
+            print_message "$GREEN" "📱 新用户配置信息:"
+            echo "备注名: ${user_remark:-"无"}"
+            echo "UUID: $new_uuid"
+            echo "IPv4分享链接:"
+            echo "$vless_link_ipv4"
+
+            if [[ -n "$server_ipv6" ]]; then
+                local vless_link_ipv6="vless://$new_uuid@[$server_ipv6]:$port?encryption=none&security=reality&sni=$dest_domain&fp=chrome&pbk=$public_key&sid=$short_id&type=http&path=%2F&host=$dest_domain#VLESS-HTTP2-REALITY-${user_remark:-"NewUser"}-IPv6"
+                echo "IPv6分享链接:"
+                echo "$vless_link_ipv6"
+            fi
+
+            log_message "添加VLESS用户: $new_uuid (${user_remark:-"无备注"})"
+        else
+            print_message "$RED" "✗ 服务重启失败，用户添加可能未生效"
+        fi
+    else
+        print_message "$RED" "配置文件更新失败"
+        return 1
+    fi
+}
+
+# 删除用户
+vless_remove_user() {
+    print_message "$BLUE" "=== 删除VLESS用户 ==="
+
+    # 检查jq工具
+    if ! command -v jq &> /dev/null; then
+        print_message "$YELLOW" "安装jq工具..."
+        apt update && apt install -y jq
+        if ! command -v jq &> /dev/null; then
+            print_message "$RED" "jq安装失败，无法管理用户"
+            return 1
+        fi
+    fi
+
+    # 检查配置文件
+    if [[ ! -f "/usr/local/etc/xray/config.json" ]]; then
+        print_message "$RED" "配置文件不存在，请先配置VLESS服务"
+        return 1
+    fi
+
+    # 显示当前用户
+    print_message "$CYAN" "📋 当前用户列表:"
+    local current_users=$(jq -r '.inbounds[0].settings.clients[].id' /usr/local/etc/xray/config.json 2>/dev/null)
+    local user_array=()
+    local user_count=0
+
+    if [[ -n "$current_users" ]]; then
+        while read uuid; do
+            ((user_count++))
+            user_array+=("$uuid")
+            echo "  $user_count. $uuid"
+        done <<< "$current_users"
+    else
+        print_message "$YELLOW" "无用户可删除"
+        return 0
+    fi
+
+    if [[ $user_count -eq 1 ]]; then
+        print_message "$RED" "只有一个用户，无法删除（至少保留一个用户）"
+        return 1
+    fi
+
+    echo
+    read -p "请选择要删除的用户编号 (1-$user_count): " user_choice
+
+    if [[ ! "$user_choice" =~ ^[0-9]+$ ]] || [[ "$user_choice" -lt 1 ]] || [[ "$user_choice" -gt $user_count ]]; then
+        print_message "$RED" "无效的用户编号"
+        return 1
+    fi
+
+    local target_uuid="${user_array[$((user_choice-1))]}"
+
+    print_message "$YELLOW" "将要删除的用户:"
+    echo "UUID: $target_uuid"
+    echo
+
+    if ! confirm_action "确认删除此用户? (此操作不可恢复)"; then
+        return 0
+    fi
+
+    # 备份配置
+    cp /usr/local/etc/xray/config.json /usr/local/etc/xray/config.json.backup-$(date +%Y%m%d-%H%M%S)
+
+    # 从配置文件中删除用户
+    jq ".inbounds[0].settings.clients = [.inbounds[0].settings.clients[] | select(.id != \"$target_uuid\")]" /usr/local/etc/xray/config.json > /tmp/xray_config_new.json
+
+    if [[ $? -eq 0 ]]; then
+        mv /tmp/xray_config_new.json /usr/local/etc/xray/config.json
+
+        # 重启服务
+        print_message "$YELLOW" "重启服务以应用配置..."
+        systemctl restart xray
+
+        if systemctl is-active --quiet xray; then
+            print_message "$GREEN" "✓ 用户删除成功"
+            log_message "删除VLESS用户: $target_uuid"
+        else
+            print_message "$RED" "✗ 服务重启失败，用户删除可能未生效"
+        fi
+    else
+        print_message "$RED" "配置文件更新失败"
+        return 1
+    fi
+}
+
+# 卸载服务
+vless_uninstall_service() {
+    print_message "$BLUE" "=== 卸载VLESS-HTTP2-REALITY服务 ==="
+
+    print_message "$RED" "⚠️  警告: 此操作将完全删除VLESS服务和配置"
+    echo "将要删除的内容:"
+    echo "• Xray服务和配置文件"
+    echo "• 客户端配置文件"
+    echo "• 日志文件"
+    echo "• 防火墙规则"
+    echo
+
+    if ! confirm_action "确认卸载VLESS服务? (此操作不可恢复)"; then
+        return 0
+    fi
+
+    # 停止并禁用服务
+    if systemctl is-active --quiet xray; then
+        print_message "$YELLOW" "停止Xray服务..."
+        systemctl stop xray
+    fi
+
+    if systemctl is-enabled --quiet xray; then
+        print_message "$YELLOW" "禁用Xray服务..."
+        systemctl disable xray
+    fi
+
+    # 删除配置文件
+    if [[ -d "/usr/local/etc/xray" ]]; then
+        print_message "$YELLOW" "删除配置文件..."
+        rm -rf /usr/local/etc/xray
+    fi
+
+    # 删除客户端配置文件
+    if [[ -f "/root/vless-http2-client-config.txt" ]]; then
+        rm -f /root/vless-http2-client-config.txt
+    fi
+    if [[ -f "/root/vless-http2-reality-config.txt" ]]; then
+        rm -f /root/vless-http2-reality-config.txt
+    fi
+    if [[ -f "/root/vless-client-config.txt" ]]; then
+        rm -f /root/vless-client-config.txt
+    fi
+    if [[ -f "/root/vless-reality-config.txt" ]]; then
+        rm -f /root/vless-reality-config.txt
+    fi
+
+    # 删除日志文件
+    if [[ -d "/var/log/xray" ]]; then
+        print_message "$YELLOW" "删除日志文件..."
+        rm -rf /var/log/xray
+    fi
+
+    # 删除防火墙规则
+    if command -v ufw &> /dev/null; then
+        print_message "$YELLOW" "删除防火墙规则..."
+        ufw status numbered | grep -E "(VLESS|vless|reality)" | while read line; do
+            local rule_num=$(echo "$line" | awk '{print $1}' | tr -d '[]')
+            if [[ -n "$rule_num" ]]; then
+                ufw delete "$rule_num" 2>/dev/null || true
+            fi
+        done
+    fi
+
+    # 询问是否删除Xray核心
+    echo
+    if confirm_action "是否同时删除Xray核心程序?"; then
+        if [[ -f "/usr/local/bin/xray" ]]; then
+            rm -f /usr/local/bin/xray
+        fi
+        if [[ -f "/etc/systemd/system/xray.service" ]]; then
+            rm -f /etc/systemd/system/xray.service
+        fi
+        if [[ -d "/etc/systemd/system/xray.service.d" ]]; then
+            rm -rf /etc/systemd/system/xray.service.d
+        fi
+        systemctl daemon-reload
+        print_message "$GREEN" "Xray核心程序已删除"
+    fi
+
+    print_message "$GREEN" "✓ VLESS服务卸载完成"
+    log_message "卸载VLESS-HTTP2-REALITY服务"
+}
+
+# 备份配置
+vless_backup_config() {
+    print_message "$BLUE" "=== 备份VLESS配置 ==="
+
+    local backup_dir="/root/vless-backup-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$backup_dir"
+
+    local backup_count=0
+
+    # 备份Xray配置
+    if [[ -f "/usr/local/etc/xray/config.json" ]]; then
+        cp "/usr/local/etc/xray/config.json" "$backup_dir/"
+        ((backup_count++))
+        print_message "$GREEN" "✓ 备份Xray配置文件"
+    fi
+
+    # 备份客户端配置
+    if [[ -f "/root/vless-http2-client-config.txt" ]]; then
+        cp "/root/vless-http2-client-config.txt" "$backup_dir/"
+        ((backup_count++))
+    fi
+    if [[ -f "/root/vless-http2-reality-config.txt" ]]; then
+        cp "/root/vless-http2-reality-config.txt" "$backup_dir/"
+        ((backup_count++))
+    fi
+    if [[ -f "/root/vless-client-config.txt" ]]; then
+        cp "/root/vless-client-config.txt" "$backup_dir/"
+        ((backup_count++))
+    fi
+    if [[ -f "/root/vless-reality-config.txt" ]]; then
+        cp "/root/vless-reality-config.txt" "$backup_dir/"
+        ((backup_count++))
+    fi
+
+    if [[ $backup_count -gt 1 ]]; then
+        print_message "$GREEN" "✓ 备份客户端配置文件"
+    fi
+
+    # 备份服务文件
+    if [[ -f "/etc/systemd/system/xray.service" ]]; then
+        cp "/etc/systemd/system/xray.service" "$backup_dir/"
+        ((backup_count++))
+        print_message "$GREEN" "✓ 备份服务文件"
+    fi
+
+    # 备份防火墙规则
+    if command -v ufw &> /dev/null; then
+        ufw status numbered > "$backup_dir/ufw-rules.txt"
+        ((backup_count++))
+        print_message "$GREEN" "✓ 备份防火墙规则"
+    fi
+
+    # 创建备份说明
+    cat > "$backup_dir/README.txt" << EOF
+VLESS-HTTP2-REALITY配置备份
+备份时间: $(date)
+备份内容: Xray配置、客户端配置、服务文件、防火墙规则
+
+恢复说明:
+1. 恢复Xray配置: cp config.json /usr/local/etc/xray/
+2. 恢复客户端配置: cp vless-*-config.txt /root/
+3. 恢复服务文件: cp xray.service /etc/systemd/system/
+4. 重启服务: systemctl daemon-reload && systemctl restart xray
+EOF
+
+    if [[ $backup_count -gt 0 ]]; then
+        print_message "$GREEN" "✓ 配置备份完成"
+        echo "备份位置: $backup_dir"
+        echo "备份文件数: $backup_count"
+        log_message "创建VLESS配置备份: $backup_dir"
+    else
+        print_message "$YELLOW" "未找到可备份的配置文件"
+        rmdir "$backup_dir" 2>/dev/null
+    fi
+}
+
+# 恢复配置
+vless_restore_config() {
+    print_message "$BLUE" "=== 恢复VLESS配置 ==="
+
+    # 查找备份目录
+    local backup_dirs=($(find /root -maxdepth 1 -name "vless-backup-*" -type d 2>/dev/null | sort -r))
+
+    if [[ ${#backup_dirs[@]} -eq 0 ]]; then
+        print_message "$YELLOW" "未找到备份目录"
+        return 1
+    fi
+
+    print_message "$CYAN" "📋 可用的备份:"
+    for i in "${!backup_dirs[@]}"; do
+        local backup_dir="${backup_dirs[i]}"
+        local backup_time=$(basename "$backup_dir" | sed 's/vless-backup-//')
+        echo "  $((i+1)). $backup_time"
+    done
+
+    echo
+    read -p "请选择要恢复的备份编号 (1-${#backup_dirs[@]}): " backup_choice
+
+    if [[ ! "$backup_choice" =~ ^[0-9]+$ ]] || [[ "$backup_choice" -lt 1 ]] || [[ "$backup_choice" -gt ${#backup_dirs[@]} ]]; then
+        print_message "$RED" "无效的备份编号"
+        return 1
+    fi
+
+    local selected_backup="${backup_dirs[$((backup_choice-1))]}"
+
+    print_message "$YELLOW" "将要恢复的备份:"
+    echo "备份目录: $selected_backup"
+    if [[ -f "$selected_backup/README.txt" ]]; then
+        echo
+        cat "$selected_backup/README.txt"
+    fi
+    echo
+
+    if ! confirm_action "确认恢复此备份? (将覆盖当前配置)"; then
+        return 0
+    fi
+
+    # 停止服务
+    if systemctl is-active --quiet xray; then
+        print_message "$YELLOW" "停止Xray服务..."
+        systemctl stop xray
+    fi
+
+    local restore_count=0
+
+    # 恢复Xray配置
+    if [[ -f "$selected_backup/config.json" ]]; then
+        mkdir -p /usr/local/etc/xray
+        cp "$selected_backup/config.json" /usr/local/etc/xray/
+        ((restore_count++))
+        print_message "$GREEN" "✓ 恢复Xray配置文件"
+    fi
+
+    # 恢复客户端配置
+    for config_file in vless-http2-client-config.txt vless-http2-reality-config.txt vless-client-config.txt vless-reality-config.txt; do
+        if [[ -f "$selected_backup/$config_file" ]]; then
+            cp "$selected_backup/$config_file" /root/
+            ((restore_count++))
+        fi
+    done
+
+    if [[ $restore_count -gt 1 ]]; then
+        print_message "$GREEN" "✓ 恢复客户端配置文件"
+    fi
+
+    # 恢复服务文件
+    if [[ -f "$selected_backup/xray.service" ]]; then
+        cp "$selected_backup/xray.service" /etc/systemd/system/
+        systemctl daemon-reload
+        ((restore_count++))
+        print_message "$GREEN" "✓ 恢复服务文件"
+    fi
+
+    # 启动服务
+    print_message "$YELLOW" "启动Xray服务..."
+    systemctl enable xray
+    systemctl start xray
+
+    if systemctl is-active --quiet xray; then
+        print_message "$GREEN" "✓ 配置恢复完成，服务运行正常"
+        log_message "恢复VLESS配置: $selected_backup"
+    else
+        print_message "$RED" "✗ 服务启动失败，请检查配置"
     fi
 }
 
@@ -3188,8 +3937,15 @@ install_singbox() {
 manage_proxy_service() {
     print_message "$BLUE" "=== 代理服务管理 ==="
 
-    if [[ ! -f "/usr/local/bin/xray" ]]; then
-        print_message "$RED" "未检测到Xray服务，请先配置vless+reality代理"
+    # 检测Xray安装
+    local xray_installed=false
+    if command -v xray &> /dev/null || [[ -f "/usr/local/bin/xray" ]]; then
+        xray_installed=true
+    fi
+
+    if [[ "$xray_installed" == false ]]; then
+        print_message "$RED" "未检测到Xray服务，请先配置VLESS代理"
+        print_message "$YELLOW" "提示: 请使用菜单选项19配置VLESS-HTTP2-REALITY代理"
         return 1
     fi
 
@@ -3210,28 +3966,52 @@ manage_proxy_service() {
         case $proxy_choice in
             1)
                 print_message "$YELLOW" "Xray服务状态:"
-                systemctl status xray --no-pager
+                if systemctl is-active --quiet xray; then
+                    print_colored "$GREEN" "✓ 服务运行中"
+                    systemctl status xray --no-pager -l | head -15
+                else
+                    print_colored "$RED" "✗ 服务未运行"
+                    systemctl status xray --no-pager -l | head -10
+                fi
                 echo
                 print_message "$YELLOW" "监听端口:"
-                ss -tlnp | grep xray || echo "未找到监听端口"
+                local ports=$(ss -tlnp | grep xray | awk '{print $4}' | cut -d':' -f2 | sort -u)
+                if [[ -n "$ports" ]]; then
+                    for port in $ports; do
+                        echo "  端口 $port: 监听中"
+                    done
+                else
+                    echo "  未找到监听端口"
+                fi
                 ;;
             2)
-                if [[ -f "/root/vless-client-config.txt" ]]; then
-                    print_message "$YELLOW" "客户端配置信息:"
+                # 优先查找新的HTTP2配置文件
+                if [[ -f "/root/vless-http2-client-config.txt" ]]; then
+                    print_message "$YELLOW" "客户端配置信息 (HTTP/2):"
+                    cat /root/vless-http2-client-config.txt
+                elif [[ -f "/root/vless-client-config.txt" ]]; then
+                    print_message "$YELLOW" "客户端配置信息 (传统):"
                     cat /root/vless-client-config.txt
                 else
                     print_message "$RED" "未找到客户端配置文件"
+                    print_message "$YELLOW" "提示: 请先配置VLESS服务或重新生成配置"
                 fi
                 ;;
             3)
                 if confirm_action "是否重启Xray服务?"; then
+                    print_message "$YELLOW" "正在重启Xray服务..."
                     systemctl restart xray
-                    sleep 2
+                    sleep 3
                     if systemctl is-active --quiet xray; then
-                        print_message "$GREEN" "Xray服务重启成功"
+                        print_message "$GREEN" "✓ Xray服务重启成功"
+                        echo
+                        print_message "$CYAN" "服务状态:"
+                        systemctl status xray --no-pager -l | head -10
                     else
-                        print_message "$RED" "Xray服务重启失败"
-                        journalctl -u xray --no-pager -l | tail -10
+                        print_message "$RED" "✗ Xray服务重启失败"
+                        echo
+                        print_message "$YELLOW" "错误日志:"
+                        journalctl -u xray --no-pager -l | tail -15
                     fi
                 fi
                 ;;
