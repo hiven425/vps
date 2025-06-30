@@ -3587,7 +3587,7 @@ diagnose_xray_config() {
     # 检查配置文件语法
     print_message "$YELLOW" "检查配置文件语法..."
     if command -v xray &> /dev/null; then
-        local test_output=$(xray test -config /usr/local/etc/xray/config.json 2>&1)
+        local test_output=$(xray -test -config /usr/local/etc/xray/config.json 2>&1)
         if [[ $? -eq 0 ]]; then
             print_message "$GREEN" "✓ 配置文件语法正确"
         else
@@ -3838,10 +3838,12 @@ EOF
     # 验证配置文件语法
     print_message "$YELLOW" "验证配置文件语法..."
     if command -v xray &> /dev/null; then
-        if xray test -config /usr/local/etc/xray/config.json; then
+        local test_output=$(xray -test -config /usr/local/etc/xray/config.json 2>&1)
+        if [[ $? -eq 0 ]]; then
             print_message "$GREEN" "✓ 配置文件语法正确"
         else
-            print_message "$RED" "✗ 配置文件语法错误"
+            print_message "$RED" "✗ 配置文件语法错误:"
+            echo "$test_output" | head -5
             return 1
         fi
     else
