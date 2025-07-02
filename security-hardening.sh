@@ -6344,6 +6344,36 @@ system_health_check() {
     break_end
 }
 
+# 启动所有服务
+start_all_services() {
+    info_msg "正在启动所有相关服务..."
+    manage_service "start" "sshd"
+    manage_service "start" "fail2ban"
+    manage_service "start" "xray"
+    success_msg "服务启动完成"
+    break_end
+}
+
+# 停止所有服务
+stop_all_services() {
+    info_msg "正在停止所有相关服务..."
+    manage_service "stop" "xray"
+    manage_service "stop" "fail2ban"
+    manage_service "stop" "sshd"
+    success_msg "服务停止完成"
+    break_end
+}
+
+# 重启所有服务
+restart_all_services() {
+    info_msg "正在重启所有相关服务..."
+    manage_service "restart" "sshd"
+    manage_service "restart" "fail2ban"
+    manage_service "restart" "xray"
+    success_msg "服务重启完成"
+    break_end
+}
+
 # 服务管理子菜单
 service_management_menu() {
     while true; do
@@ -6513,7 +6543,7 @@ execute_batch_operations() {
 
         case $op in
             1) detect_system_environment ;;
-            2) configure_ssh_security ;;
+            2) configure_ssh_securely ;;
             3) configure_firewall ;;
             4) system_optimization ;;
             5) install_configure_fail2ban ;;
@@ -6596,7 +6626,7 @@ handle_command_line_args() {
             ;;
         --security)
             echo "执行安全加固..."
-            configure_ssh_security
+            configure_ssh_securely
             configure_firewall
             system_optimization
             install_configure_fail2ban
@@ -6633,7 +6663,7 @@ handle_command_line_args() {
             ;;
         "")
             # 无参数，启动交互模式
-            main
+            main_menu
             ;;
         *)
             echo "未知参数: $1"
@@ -6725,8 +6755,22 @@ show_system_status() {
     fi
 }
 
+# 脚本主入口
+main() {
+    root_check
+    copy_script_to_system
+    authorization_check
+    authorization_false
+    detect_system_environment
+    
+    if [[ $# -gt 0 ]]; then
+        handle_command_line_args "$@"
+    else
+        main_menu
+    fi
+}
+
 # 脚本入口点
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    handle_command_line_args "$@"
+    main "$@"
 fi
-#endregion
