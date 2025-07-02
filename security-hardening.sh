@@ -3205,7 +3205,8 @@ create_vless_reality_config() {
         ],
         "routeOnly": true
       }
-    }EOF
+    }
+EOF
 
     # 如果支持IPv6，添加IPv6 inbound
     if [[ "$ipv6_supported" == "true" ]]; then
@@ -3253,7 +3254,8 @@ create_vless_reality_config() {
         ],
         "routeOnly": true
       }
-    }EOF
+    }
+EOF
     fi
 
     # 完成JSON配置
