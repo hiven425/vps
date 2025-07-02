@@ -5928,45 +5928,6 @@ main_menu() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
-                    else
-                        warn_msg "$service 服务启动失败"
-                    fi
-                else
-                    warn_msg "$service 服务未安装"
-                fi
-                ;;
-            fail2ban)
-                if command_exists fail2ban-client; then
-                    if manage_service start fail2ban 2>/dev/null; then
-                        success_msg "$service 服务启动成功"
-                        ((started_count++))
-                    else
-                        warn_msg "$service 服务启动失败"
-                    fi
-                else
-                    warn_msg "$service 服务未安装"
-                fi
-                ;;
-            ufw)
-                if command_exists ufw; then
-                    if ufw --force enable >/dev/null 2>&1; then
-                        success_msg "$service 防火墙启动成功"
-                        ((started_count++))
-                    else
-                        warn_msg "$service 防火墙启动失败"
-                    fi
-                else
-                    warn_msg "$service 防火墙未安装"
-                fi
-                ;;
-        esac
-        sleep 1
-    done
-
-    echo ""
-    echo -e "${green}服务启动完成！成功启动 $started_count 个服务${white}"
-    break_end
-}
 
 # 停止所有服务
 stop_all_services() {
