@@ -613,21 +613,6 @@ setup_ssh_keys() {
     echo -e "${red}此文件包含敏感信息，请妥善保管，不要泄露。${white}"
 }
 
-                    if [[ ${#conflicts[@]} -gt 0 ]]; then
-                        echo -e "${red}    ⚠ 发现可能冲突的配置项: ${conflicts[*]}${white}"
-                    fi
-                fi
-            done
-            echo ""
-
-            echo -e "${yellow}根据最佳实践建议，应该备份这些配置文件以避免冲突。${white}"
-            echo "参考: https://unix.stackexchange.com/questions/727492/"
-            echo ""
-
-            if confirm_operation "备份这些配置文件以避免冲突"; then
-                for config in "${found_configs[@]}"; do
-                    local backup_name="${config}.bak.$(date +%Y%m%d_%H%M%S)"
-                    mv "$config" "$backup_name"
                     success_msg "已备份: $(basename "$config") -> $(basename "$backup_name")"
                 done
             else
