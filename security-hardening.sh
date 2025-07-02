@@ -101,8 +101,6 @@ append_if_not_exists() {
     fi
 }
 
-# 进度显示函数
-show_progress() {
 #endregion
 
 #region //输入验证函数库
