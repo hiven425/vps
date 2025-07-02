@@ -1,0 +1,375 @@
+# VPS安全加固与代理搭建工具 - Git忽略文件
+
+# 配置文件和敏感信息
+config/
+*.conf
+*.config
+proxy_config.conf
+ssh_config.conf
+system_info.conf
+
+# 日志文件
+*.log
+logs/
+/var/log/
+security-hardening.log
+
+# 临时文件
+*.tmp
+*.temp
+temp/
+tmp/
+
+# 备份文件
+*.bak
+*.backup
+backup/
+backups/
+*.orig
+
+# 客户端配置文件（包含敏感信息）
+client_configs/
+*.json
+*.yaml
+*.yml
+vless_share_link*.txt
+clash_config.yaml
+client_config.json
+
+# SSH密钥文件
+*.pem
+*.key
+id_rsa*
+*.pub
+authorized_keys
+
+# 证书文件
+*.crt
+*.cert
+*.p12
+*.pfx
+
+# 系统生成的文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器和IDE文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.vim/
+
+# 运行时文件
+*.pid
+*.sock
+*.lock
+
+# 压缩文件
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# 导出的配置
+config_export_*.tar.gz
+network_quality_report.txt
+
+# 系统特定文件
+/etc/ssh/sshd_config.d/*.conf.bak.*
+/etc/fail2ban/jail.local.bak.*
+/etc/systemd/system/xray.service.bak.*
+
+# Xray相关文件
+xray
+xray.exe
+/usr/local/bin/xray
+/etc/systemd/system/xray.service
+
+# 测试文件
+test_*
+*_test.sh
+
+# 缓存文件
+cache/
+.cache/
+
+# 本地环境变量
+.env
+.env.local
+.env.production
+
+# 用户特定配置
+user_config.sh
+local_settings.conf
+
+# 网络测试结果
+speedtest_*.txt
+ping_test_*.log
+
+# 错误日志
+error.log
+debug.log
+
+# 临时脚本
+temp_script.sh
+install_temp.sh
+
+# 下载的文件
+downloads/
+*.deb
+*.rpm
+*.pkg
+
+# 编译产物
+*.o
+*.so
+*.dll
+*.exe
+
+# 文档生成文件
+docs/build/
+*.pdf
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 监控数据
+monitoring/
+stats/
+
+# 性能测试结果
+benchmark_*.txt
+performance_*.log
+
+# 安全扫描结果
+security_scan_*.txt
+vulnerability_report_*.json
+
+# 自动生成的文档
+AUTO_GENERATED_*
+GENERATED_*
+
+# 本地开发文件
+dev/
+development/
+local/
+
+# 打包文件
+dist/
+build/
+release/
+
+# 依赖文件
+node_modules/
+vendor/
+
+# 操作系统文件
+*.lnk
+.Trash-*
+.fuse_hidden*
+
+# 网络配置备份
+network_backup_*
+iptables_backup_*
+ufw_backup_*
+
+# 用户数据
+user_data/
+personal/
+
+# 临时安装文件
+install_*.tmp
+setup_*.temp
+
+# 调试信息
+debug/
+trace/
+dump/
+
+# 本地测试环境
+test_env/
+staging/
+
+# 自动备份
+auto_backup_*
+scheduled_backup_*
+
+# 系统状态快照
+system_snapshot_*
+status_*.json
+
+# 性能监控
+perf_*.data
+profile_*.txt
+
+# 安全审计
+audit_*.log
+security_*.report
+
+# 更新文件
+update_*.sh
+patch_*.diff
+
+# 临时下载
+wget-log*
+curl_*.tmp
+
+# 脚本执行记录
+execution_*.log
+run_*.history
+
+# 用户会话
+session_*
+token_*
+
+# API密钥和凭证
+api_keys.txt
+credentials.json
+secrets.conf
+
+# 本地化文件
+locale/
+i18n/
+
+# 文档草稿
+draft_*
+notes_*
+TODO_*
+
+# 实验性功能
+experimental/
+beta/
+alpha/
+
+# 第三方工具
+tools/
+utilities/
+external/
+
+# 自定义脚本
+custom_*
+user_*
+personal_*
+
+# 统计数据
+statistics/
+metrics/
+analytics/
+
+# 报告文件
+report_*
+summary_*
+analysis_*
+
+# 配置模板的实例
+*_instance.conf
+*_production.conf
+*_local.conf
+
+# 加密文件
+*.gpg
+*.enc
+encrypted_*
+
+# 数字签名
+*.sig
+*.asc
+
+# 许可证密钥
+license.key
+activation.dat
+
+# 更新检查
+update_check_*
+version_check_*
+
+# 安装记录
+install_history.txt
+setup_log.txt
+
+# 错误转储
+core.*
+crash_*
+dump_*
+
+# 进程信息
+process_*.info
+service_*.status
+
+# 网络诊断
+network_diag_*
+connectivity_*
+latency_*
+
+# 系统诊断
+system_diag_*
+hardware_info_*
+software_list_*
+
+# 清理脚本生成的文件
+cleanup_*.log
+maintenance_*.report
+
+# 自动化脚本的输出
+automation_*.output
+scheduled_*.result
+
+# 监控告警
+alert_*
+notification_*
+warning_*
+
+# 容器相关
+docker/
+containers/
+images/
+
+# 虚拟化
+vm/
+virtual/
+qemu/
+
+# 云服务配置
+cloud_*
+aws_*
+gcp_*
+azure_*
+
+# CDN配置
+cdn_*
+cloudflare_*
+
+# 负载均衡
+lb_*
+proxy_*
+nginx_*
+
+# 数据同步
+sync_*
+replication_*
+mirror_*
+
+# 备份验证
+backup_verify_*
+restore_test_*
+
+# 灾难恢复
+disaster_recovery_*
+failover_*
+
+# 合规性检查
+compliance_*
+audit_trail_*
+regulatory_*
+
+# 最后添加：任何以 . 开头的隐藏文件（除了 .gitignore 本身）
+.*
+!.gitignore
+!.github/
+memory-bank/
+.claude
