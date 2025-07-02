@@ -613,21 +613,6 @@ setup_ssh_keys() {
     echo -e "${red}此文件包含敏感信息，请妥善保管，不要泄露。${white}"
 }
 
-                    success_msg "已备份: $(basename "$config") -> $(basename "$backup_name")"
-                done
-            else
-                warn_msg "保留现有配置文件，可能会与自定义配置冲突"
-                echo -e "${red}注意: 云服务商配置可能会覆盖您的自定义设置${white}"
-            fi
-        else
-            info_msg "未发现云服务商配置文件"
-        fi
-    else
-        info_msg "sshd_config.d 目录不存在，将创建"
-        mkdir -p "$sshd_config_dir"
-    fi
-}
-
 # 创建自定义SSH配置文件
 create_custom_ssh_config() {
     local ssh_port="$1"
