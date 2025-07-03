@@ -156,6 +156,19 @@ prompt_for_input() {
     done
 }
 
+# 安全获取SSH配置值
+get_ssh_config_value() {
+    local config_name="$1"
+    local default_value="${2:-未设置}"
+
+    local value=$(sshd -T 2>/dev/null | grep -i "^$config_name " | awk '{print $2}')
+    if [[ -z "$value" ]]; then
+        echo "$default_value"
+    else
+        echo "$value"
+    fi
+}
+
 # 验证端口号
 validate_port() {
     local port="$1"
@@ -1930,7 +1943,7 @@ verify_ssh_config_simple() {
     )
 
     for config in "${key_configs[@]}"; do
-        local value=$(sshd -T | grep -i "^$config " | awk '{print $2}' 2>/dev/null || echo "未设置")
+        local value=$(get_ssh_config_value "$config" "未设置")
         printf "  %-20s: %s\n" "$config" "$value"
     done
 
@@ -2461,9 +2474,9 @@ ssh_config_management() {
         echo -e "${cyan}当前SSH状态:${white}"
         if systemctl is-active sshd >/dev/null 2>&1 || systemctl is-active ssh >/dev/null 2>&1; then
             echo "  服务状态: 运行中"
-            local current_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "未知")
-            local root_login=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "未知")
-            local password_auth=$(sshd -T 2>/dev/null | grep -i '^passwordauthentication ' | awk '{print $2}' || echo "未知")
+            local current_port=$(get_ssh_config_value "port" "未知")
+            local root_login=$(get_ssh_config_value "permitrootlogin" "未知")
+            local password_auth=$(get_ssh_config_value "passwordauthentication" "未知")
             echo "  当前端口: $current_port"
             echo "  Root登录: $root_login"
             echo "  密码认证: $password_auth"
@@ -2529,7 +2542,7 @@ change_ssh_port_only() {
     echo -e "${pink}修改SSH端口${white}"
     echo "================================"
 
-    local current_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "22")
+    local current_port=$(get_ssh_config_value "port" "22")
     echo "当前SSH端口: $current_port"
     echo ""
 
@@ -2594,9 +2607,9 @@ configure_root_login_only() {
     echo "================================"
 
     # 获取当前配置
-    local current_root=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "未知")
-    local current_password_auth=$(sshd -T 2>/dev/null | grep -i '^passwordauthentication ' | awk '{print $2}' || echo "未知")
-    local current_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "22")
+    local current_root=$(get_ssh_config_value "permitrootlogin" "未知")
+    local current_password_auth=$(get_ssh_config_value "passwordauthentication" "未知")
+    local current_port=$(get_ssh_config_value "port" "22")
 
     echo -e "${cyan}当前SSH配置:${white}"
     echo "  Root登录方式: $current_root"
@@ -2799,7 +2812,7 @@ show_current_ssh_config() {
         )
 
         for config in "${key_configs[@]}"; do
-            local value=$(echo "$effective_config" | grep -i "^$config " | awk '{print $2}' 2>/dev/null || echo "未设置")
+            local value=$(get_ssh_config_value "$config" "未设置")
             printf "  %-20s: %s\n" "$config" "$value"
         done
 
@@ -8216,8 +8229,8 @@ security_hardening_menu() {
         # 显示当前SSH状态
         echo -e "${cyan}当前SSH状态:${white}"
         if systemctl is-active sshd >/dev/null 2>&1 || systemctl is-active ssh >/dev/null 2>&1; then
-            local current_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "未知")
-            local password_auth=$(sshd -T 2>/dev/null | grep -i '^passwordauthentication ' | awk '{print $2}' || echo "未知")
+            local current_port=$(get_ssh_config_value "port" "未知")
+            local password_auth=$(get_ssh_config_value "passwordauthentication" "未知")
             echo "  服务状态: 运行中 | 端口: $current_port | 密码认证: $password_auth"
         else
             echo "  服务状态: 未运行"
