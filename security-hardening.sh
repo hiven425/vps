@@ -325,6 +325,18 @@ install_basic_dependencies() {
     success_msg "基础依赖安装完成"
 }
 
+# 检测SSH服务名称
+detect_ssh_service_name() {
+    if systemctl list-unit-files | grep -q "^sshd.service"; then
+        echo "sshd"
+    elif systemctl list-unit-files | grep -q "^ssh.service"; then
+        echo "ssh"
+    else
+        # 默认尝试sshd
+        echo "sshd"
+    fi
+}
+
 # 安装SSH服务
 install_ssh_server() {
     info_msg "正在安装SSH服务..."
@@ -345,9 +357,14 @@ install_ssh_server() {
             ;;
     esac
 
+    # 检测SSH服务名称
+    local ssh_service=$(detect_ssh_service_name)
+    info_msg "检测到SSH服务名称: $ssh_service"
+
     # 启动并启用SSH服务
-    if systemctl enable sshd 2>/dev/null || systemctl enable ssh 2>/dev/null; then
-        if systemctl start sshd 2>/dev/null || systemctl start ssh 2>/dev/null; then
+    if systemctl enable "$ssh_service" 2>/dev/null; then
+        success_msg "SSH服务已设置为开机自启"
+        if systemctl start "$ssh_service" 2>/dev/null; then
             success_msg "SSH服务安装并启动成功"
         else
             warn_msg "SSH服务安装成功但启动失败"
@@ -1377,13 +1394,14 @@ optimize_ssh_security_settings() {
             success_msg "SSH配置语法正确"
 
             if confirm_operation "重启SSH服务以应用配置"; then
-                if systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null; then
+                if manage_ssh_service restart; then
                     success_msg "SSH服务已重启，配置已生效"
                 else
                     warn_msg "SSH服务重启失败，请手动重启"
                 fi
             else
-                info_msg "配置已保存，请手动重启SSH服务: systemctl restart sshd"
+                local ssh_service=$(detect_ssh_service_name)
+                info_msg "配置已保存，请手动重启SSH服务: systemctl restart $ssh_service"
             fi
         else
             error_exit "SSH配置语法错误，请检查配置文件"
@@ -1623,7 +1641,7 @@ fix_permit_root_login_syntax() {
             # 重启SSH服务
             echo ""
             if confirm_operation "重启SSH服务以应用新配置"; then
-                if systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null; then
+                if manage_ssh_service restart; then
                     success_msg "SSH服务已重启"
 
                     # 验证更新结果
@@ -1665,7 +1683,7 @@ fix_permit_root_login_syntax() {
             force_update_permit_root_login "prohibit-password"
 
             if confirm_operation "重启SSH服务"; then
-                systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null
+                manage_ssh_service restart
                 success_msg "配置已更新并重启服务"
             fi
         fi
@@ -2358,7 +2376,7 @@ ssh_config_diagnosis() {
     # 5. SSH服务状态检查
     echo ""
     echo -e "${cyan}5. SSH服务状态检查${white}"
-    if systemctl is-active sshd >/dev/null 2>&1 || systemctl is-active ssh >/dev/null 2>&1; then
+    if is_ssh_service_active; then
         echo "  ✓ SSH服务正在运行"
         local ssh_port=$(ss -tlnp | grep -E ':22[[:space:]]|:'"$port"'[[:space:]]' | head -1)
         if [[ -n "$ssh_port" ]]; then
@@ -2370,7 +2388,8 @@ ssh_config_diagnosis() {
     else
         echo "  ✗ SSH服务未运行"
         ((issues++))
-        recommendations+=("启动SSH服务: sudo systemctl start sshd")
+        local ssh_service=$(detect_ssh_service_name)
+        recommendations+=("启动SSH服务: sudo systemctl start $ssh_service")
     fi
 
     # 6. SSH密钥检查
@@ -2530,6 +2549,40 @@ fix_ssh_issues() {
     fi
 }
 
+# SSH服务管理函数
+manage_ssh_service() {
+    local action="$1"
+    local ssh_service=$(detect_ssh_service_name)
+
+    case $action in
+        restart|start|stop|enable|disable|status)
+            manage_service "$action" "$ssh_service"
+            ;;
+        *)
+            error_exit "无效的SSH服务操作: $action"
+            ;;
+    esac
+}
+
+# 检查SSH服务是否运行
+is_ssh_service_active() {
+    systemctl is-active sshd >/dev/null 2>&1 || systemctl is-active ssh >/dev/null 2>&1
+}
+
+# 获取SSH服务状态
+get_ssh_service_status() {
+    local status
+    if systemctl is-active sshd >/dev/null 2>&1; then
+        status=$(systemctl is-active sshd 2>/dev/null)
+        echo "$status (sshd)"
+    elif systemctl is-active ssh >/dev/null 2>&1; then
+        status=$(systemctl is-active ssh 2>/dev/null)
+        echo "$status (ssh)"
+    else
+        echo "inactive"
+    fi
+}
+
 # 重启SSH服务
 restart_ssh_service() {
     info_msg "重启SSH服务..."
@@ -2540,7 +2593,7 @@ restart_ssh_service() {
     fi
 
     # 重启SSH服务
-    manage_service restart sshd || manage_service restart ssh
+    manage_ssh_service restart
 
     success_msg "SSH服务已重启"
 }
@@ -2971,7 +3024,7 @@ ssh_service_management() {
     case $choice in
         1)
             info_msg "启动SSH服务..."
-            if manage_service start sshd || manage_service start ssh; then
+            if manage_ssh_service start; then
                 success_msg "SSH服务启动成功"
             else
                 error_msg "SSH服务启动失败"
@@ -2980,14 +3033,14 @@ ssh_service_management() {
         2)
             warn_msg "停止SSH服务将断开所有SSH连接"
             if confirm_operation "停止SSH服务"; then
-                manage_service stop sshd || manage_service stop ssh
+                manage_ssh_service stop
                 warn_msg "SSH服务已停止"
             fi
             ;;
         3)
             info_msg "重启SSH服务..."
             if sshd -t; then
-                if manage_service restart sshd || manage_service restart ssh; then
+                if manage_ssh_service restart; then
                     success_msg "SSH服务重启成功"
                 else
                     error_msg "SSH服务重启失败"
