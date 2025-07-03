@@ -423,68 +423,201 @@ command_exists() {
 # 默认SSH端口
 SSH_DEFAULT_PORT="55520"
 
-# 新的SSH安全配置主函数
+# 新的SSH安全配置主函数 (优化版)
 configure_ssh_securely() {
+    clear
+    echo -e "${pink}SSH安全加固配置${white}"
+    echo "================================"
+    echo "参考: https://linux.do/t/topic/267502"
+    echo "参考: https://101.lug.ustc.edu.cn/"
+    echo ""
+
     info_msg "开始执行SSH安全加固流程..."
+    echo ""
+    echo "配置特点:"
+    echo "• 使用 sshd_config.d 目录避免主配置冲突"
+    echo "• 检查并处理云服务商配置覆盖"
+    echo "• 根据用户偏好优化连接参数"
+    echo "• 使用 'sshd -T' 验证最终生效配置"
+    echo ""
 
     # --- 步骤 1: 环境扫描与冲突处理 ---
+    echo -e "${cyan}步骤 1/6: 环境扫描与冲突处理${white}"
     handle_ssh_conflict_configs
+    echo ""
 
     # --- 步骤 2: 获取用户输入 ---
+    echo -e "${cyan}步骤 2/6: 配置参数设置${white}"
     local new_ssh_port
-    prompt_for_input "请输入新的SSH端口 (1-65535) [默认: $SSH_DEFAULT_PORT]: " new_ssh_port validate_port_or_empty "$SSH_DEFAULT_PORT"
+    prompt_for_input "请输入新的SSH端口 (1024-65535) [默认: $SSH_DEFAULT_PORT]: " new_ssh_port validate_port_or_empty "$SSH_DEFAULT_PORT"
     if [[ -z "$new_ssh_port" ]]; then
         new_ssh_port="$SSH_DEFAULT_PORT"
     fi
-    
-    if ! confirm_operation "将SSH端口设置为 $new_ssh_port 并禁用密码登录"; then
+
+    # Root登录方式选择
+    echo ""
+    echo -e "${cyan}Root用户登录方式选择:${white}"
+    echo "1. prohibit-password - 仅允许密钥登录 (推荐)"
+    echo "2. no - 完全禁止Root登录"
+    echo ""
+    local root_choice
+    prompt_for_input "请选择Root登录方式 [1-2, 默认: 1]: " root_choice validate_numeric_range_or_empty 1 2 "1"
+
+    local permit_root_login
+    case "${root_choice:-1}" in
+        1) permit_root_login="prohibit-password" ;;
+        2) permit_root_login="no" ;;
+        *) permit_root_login="prohibit-password" ;;
+    esac
+
+    echo ""
+    echo -e "${yellow}配置摘要:${white}"
+    echo "  SSH端口: $new_ssh_port"
+    echo "  Root登录: $permit_root_login"
+    echo "  密码认证: 禁用"
+    echo "  公钥认证: 启用"
+    echo "  X11转发: 启用"
+    echo "  DNS查找: 禁用 (加快登录)"
+    echo "  连接保活: 60秒间隔, 最多3次"
+    echo ""
+
+    if ! confirm_operation "应用SSH安全配置"; then
         warn_msg "用户取消了SSH配置操作。"
         return
     fi
 
     # --- 步骤 3: 应用安全配置 ---
-    apply_ssh_secure_config "$new_ssh_port"
+    echo ""
+    echo -e "${cyan}步骤 3/6: 应用安全配置${white}"
+    apply_ssh_secure_config "$new_ssh_port" "$permit_root_login"
 
     # --- 步骤 4: 配置验证 ---
-    verify_ssh_config "$new_ssh_port"
+    echo ""
+    echo -e "${cyan}步骤 4/6: 配置验证${white}"
+    verify_ssh_config "$new_ssh_port" "$permit_root_login"
 
-    # --- 步骤 5: 安全地重启服务 ---
+    # --- 步骤 5: 生成SSH密钥 ---
+    echo ""
+    echo -e "${cyan}步骤 5/6: SSH密钥配置${white}"
+    setup_ssh_keys
+
+    # --- 步骤 6: 安全地重启服务 ---
+    echo ""
+    echo -e "${cyan}步骤 6/6: 重启SSH服务${white}"
     info_msg "准备重启SSH服务以应用配置..."
+
+    # 最后一次验证
+    if ! sshd -t; then
+        error_exit "配置文件验证失败，取消重启以避免锁定"
+    fi
+
     manage_service "restart" "sshd"
-    
-    success_msg "SSH服务已重启。请使用新端口 $new_ssh_port 和密钥登录。"
-    warn_msg "当前会话不会中断，但新连接需要使用新配置。"
+
+    echo ""
+    success_msg "SSH安全配置完成！"
+    echo ""
+    echo -e "${green}重要提醒:${white}"
+    echo "• 当前会话不会中断"
+    echo "• 新连接请使用端口 $new_ssh_port"
+    echo "• 仅支持密钥认证登录"
+    echo "• 使用 'sudo sshd -T' 可查看完整配置"
+    echo ""
+
+    # 保存配置信息
+    save_ssh_config_info "$new_ssh_port" "$permit_root_login"
 }
 
-# 步骤 1: 处理潜在的SSH配置冲突
-handle_ssh_conflict_configs() {
-    info_msg "扫描潜在的SSH配置冲突..."
-    local sshd_config_dir="/etc/ssh/sshd_config.d"
-    local conflict_files=()
+# 检查常见云服务商SSH配置文件
+check_common_cloud_configs() {
+    local cloud_configs=(
+        "/etc/ssh/sshd_config.d/50-cloud-init.conf"     # CloudCone, DigitalOcean
+        "/etc/ssh/sshd_config.d/60-cloudimg-settings.conf"  # Ubuntu Cloud Images
+        "/etc/ssh/sshd_config.d/99-cloudimg-settings.conf"  # Ubuntu Cloud Images (newer)
+        "/etc/ssh/sshd_config.d/50-cloudimg-settings.conf"  # Ubuntu Cloud Images (older)
+        "/etc/ssh/sshd_config.d/01-permitrootlogin.conf"    # Some VPS providers
+        "/etc/ssh/sshd_config.d/00-cloud-init.conf"         # Generic cloud-init
+    )
 
+    local found_configs=()
+    for config in "${cloud_configs[@]}"; do
+        if [[ -f "$config" ]]; then
+            found_configs+=("$config")
+        fi
+    done
+
+    if [[ ${#found_configs[@]} -gt 0 ]]; then
+        return 0  # 找到云服务商配置
+    else
+        return 1  # 未找到
+    fi
+}
+
+# 检查并处理云服务商SSH配置
+check_cloud_ssh_configs() {
+    info_msg "检查云服务商SSH配置文件..."
+    echo "参考: https://linux.do/t/topic/267502"
+    echo "参考: https://unix.stackexchange.com/questions/727492/"
+    echo ""
+
+    local cloud_configs=()
+    local sshd_config_dir="/etc/ssh/sshd_config.d"
+
+    # 检查是否存在 sshd_config.d 目录
+    if [[ ! -d "$sshd_config_dir" ]]; then
+        warn_msg "sshd_config.d 目录不存在，将创建它"
+        mkdir -p "$sshd_config_dir"
+        chmod 755 "$sshd_config_dir"
+    fi
+
+    # 扫描所有 .conf 文件
     if [[ -d "$sshd_config_dir" ]]; then
         while IFS= read -r -d '' file; do
-            conflict_files+=("$file")
+            cloud_configs+=("$file")
         done < <(find "$sshd_config_dir" -name "*.conf" -print0 2>/dev/null)
     fi
 
-    if [[ ${#conflict_files[@]} -gt 0 ]]; then
-        warn_msg "发现可能覆盖安全设置的配置文件:"
-        for file in "${conflict_files[@]}"; do
+    if [[ ${#cloud_configs[@]} -gt 0 ]]; then
+        warn_msg "发现以下SSH配置文件，可能会覆盖安全设置:"
+        for file in "${cloud_configs[@]}"; do
             echo -e "${yellow}  - $file${white}"
+            # 显示文件内容摘要
+            if [[ -r "$file" ]]; then
+                echo -e "${cyan}    内容摘要:${white}"
+                grep -E "^[[:space:]]*(Port|PermitRootLogin|PasswordAuthentication|PubkeyAuthentication)" "$file" 2>/dev/null | sed 's/^/      /' || echo "      (无关键配置项)"
+            fi
         done
-        
-        if confirm_operation "将这些冲突文件重命名为 .bak 以禁用它们"; then
-            for file in "${conflict_files[@]}"; do
-                mv "$file" "${file}.bak"
-                success_msg "已禁用: $file -> ${file}.bak"
+        echo ""
+
+        echo -e "${yellow}建议操作:${white}"
+        echo "1. 重命名为 .bak 文件以禁用 (推荐)"
+        echo "2. 保留文件但可能导致配置冲突"
+        echo ""
+
+        if confirm_operation "将这些配置文件重命名为 .bak 以避免冲突"; then
+            for file in "${cloud_configs[@]}"; do
+                if [[ -f "$file" ]]; then
+                    mv "$file" "${file}.bak"
+                    success_msg "已禁用: $(basename "$file") -> $(basename "$file").bak"
+                fi
             done
+            info_msg "云服务商配置文件已禁用，自定义配置将正常生效"
         else
-            warn_msg "未禁用冲突文件。SSH安全设置可能不会生效。"
+            warn_msg "保留云服务商配置文件。请注意可能的配置冲突。"
+            warn_msg "建议使用 'sudo sshd -T' 检查最终生效的配置"
         fi
     else
-        info_msg "未发现冲突的SSH配置文件。"
+        success_msg "未发现冲突的云服务商SSH配置文件"
     fi
+}
+
+# 步骤 1: 处理潜在的SSH配置冲突 (改进版)
+handle_ssh_conflict_configs() {
+    info_msg "扫描潜在的SSH配置冲突..."
+    echo "参考最佳实践: https://linux.do/t/topic/267502"
+    echo ""
+
+    # 使用新的云服务商配置检查函数
+    check_cloud_ssh_configs
 }
 
 # 步骤 2 的辅助验证函数
@@ -496,85 +629,206 @@ validate_port_or_empty() {
     validate_port "$input"
 }
 
-# 步骤 3: 将安全配置写入专用文件
+# 步骤 3: 将安全配置写入专用文件 (优化版)
 apply_ssh_secure_config() {
     local new_port="$1"
+    local permit_root="${2:-prohibit-password}"  # 默认使用 prohibit-password
     local config_file="/etc/ssh/sshd_config.d/99-security-hardening.conf"
 
     info_msg "将安全配置写入 $config_file"
+    echo "参考: https://linux.do/t/topic/267502"
+    echo "使用 sshd_config.d 目录避免主配置文件冲突"
+
+    # 确保目录存在
+    mkdir -p "$(dirname "$config_file")"
+
+    # 备份现有配置文件
+    if [[ -f "$config_file" ]]; then
+        backup_file "$config_file"
+    fi
 
     # 备份主配置文件以防万一
     backup_file "/etc/ssh/sshd_config"
 
     # 使用Here Document原子化写入配置
     cat << EOF > "$config_file"
-# 由 security-hardening 脚本自动生成
-# 时间: $(date)
+# VPS安全加固工具 - SSH安全配置
+# 自动生成时间: $(date '+%Y-%m-%d %H:%M:%S')
+# 参考: https://linux.do/t/topic/267502
+# 参考: https://101.lug.ustc.edu.cn/
+#
+# 此文件位于 sshd_config.d 目录中，优先级高于主配置文件
+# 使用 'sudo sshd -T' 可查看最终生效的配置
 
-# --- 连接设置 ---
+# === 连接设置 ===
 Port $new_port
 Protocol 2
 
-# --- 认证 ---
+# === 认证配置 ===
+# 启用公钥认证，禁用密码认证
 PubkeyAuthentication yes
 PasswordAuthentication no
-PermitRootLogin no
 ChallengeResponseAuthentication no
-UsePAM yes
+KbdInteractiveAuthentication no
 
-# --- 安全增强 ---
+# Root用户登录策略
+# prohibit-password: 仅允许密钥登录
+# no: 完全禁止Root登录
+PermitRootLogin $permit_root
+
+# === 安全增强 ===
+# 认证尝试限制
 MaxAuthTries 3
 LoginGraceTime 2m
-ClientAliveInterval 300
-ClientAliveCountMax 2
+
+# 连接保活设置 (根据用户偏好优化)
+ClientAliveInterval 60
+ClientAliveCountMax 3
+
+# 基础安全设置
 PermitEmptyPasswords no
 IgnoreRhosts yes
 HostbasedAuthentication no
-X11Forwarding no
+UsePAM yes
+
+# === 功能设置 ===
+# X11转发 (根据用户偏好启用)
+X11Forwarding yes
+X11DisplayOffset 10
+X11UseLocalhost yes
+
+# DNS查找 (根据用户偏好禁用以加快登录)
+UseDNS no
+
+# === 会话限制 ===
+MaxStartups 10:30:60
+MaxSessions 10
+
+# === 日志设置 ===
+LogLevel INFO
+SyslogFacility AUTHPRIV
 EOF
 
-    success_msg "安全配置已写入 $config_file"
+    # 设置正确的文件权限
+    chmod 644 "$config_file"
+
+    success_msg "SSH安全配置已写入 $config_file"
+    info_msg "配置特点:"
+    echo "  - 使用 sshd_config.d 目录，避免主配置文件冲突"
+    echo "  - 根据用户偏好优化连接保活参数"
+    echo "  - 启用X11转发，禁用DNS查找以加快登录"
+    echo "  - 使用 prohibit-password 允许Root密钥登录"
 }
 
-# 步骤 4: 验证最终生效的SSH配置
+# 步骤 4: 验证最终生效的SSH配置 (增强版)
 verify_ssh_config() {
     local expected_port="$1"
+    local expected_root_login="${2:-prohibit-password}"
+
     info_msg "验证最终生效的SSH配置..."
+    echo "参考: https://linux.do/t/topic/267502"
+    echo "使用 'sshd -T' 检查最终生效配置"
+    echo ""
 
-    # 检查语法
-    if ! sshd -t; then
-        error_exit "SSH配置文件语法错误，请手动检查 /etc/ssh/。"
+    # 1. 检查配置文件语法
+    echo -e "${cyan}1. 配置文件语法检查${white}"
+    if ! sshd -t 2>/dev/null; then
+        echo -e "${red}✗ SSH配置文件语法错误${white}"
+        echo "错误详情:"
+        sshd -t 2>&1 | sed 's/^/  /'
+        error_exit "请修复配置文件语法错误后重试"
+    else
+        echo -e "${green}✓ SSH配置文件语法正确${white}"
     fi
-    success_msg "SSH配置文件语法正确。"
 
-    # 使用 sshd -T 获取最终配置
+    # 2. 使用 sshd -T 获取最终生效配置
+    echo ""
+    echo -e "${cyan}2. 最终生效配置验证${white}"
     local effective_config
-    effective_config=$(sshd -T)
+    if ! effective_config=$(sshd -T 2>/dev/null); then
+        error_exit "无法获取SSH有效配置，请检查配置文件"
+    fi
 
-    # 验证关键安全设置
+    # 3. 验证关键安全设置
     local effective_port=$(echo "$effective_config" | grep -i '^port ' | awk '{print $2}')
     local effective_root_login=$(echo "$effective_config" | grep -i '^permitrootlogin ' | awk '{print $2}')
     local effective_password_auth=$(echo "$effective_config" | grep -i '^passwordauthentication ' | awk '{print $2}')
+    local effective_pubkey_auth=$(echo "$effective_config" | grep -i '^pubkeyauthentication ' | awk '{print $2}')
+    local effective_x11_forward=$(echo "$effective_config" | grep -i '^x11forwarding ' | awk '{print $2}')
+    local effective_use_dns=$(echo "$effective_config" | grep -i '^usedns ' | awk '{print $2}')
+    local effective_client_alive=$(echo "$effective_config" | grep -i '^clientaliveinterval ' | awk '{print $2}')
 
+    # 4. 显示关键配置项
+    echo "关键配置项验证:"
+    printf "  %-20s: %s\n" "Port" "$effective_port"
+    printf "  %-20s: %s\n" "PermitRootLogin" "$effective_root_login"
+    printf "  %-20s: %s\n" "PasswordAuth" "$effective_password_auth"
+    printf "  %-20s: %s\n" "PubkeyAuth" "$effective_pubkey_auth"
+    printf "  %-20s: %s\n" "X11Forwarding" "$effective_x11_forward"
+    printf "  %-20s: %s\n" "UseDNS" "$effective_use_dns"
+    printf "  %-20s: %s\n" "ClientAliveInterval" "$effective_client_alive"
+
+    # 5. 验证配置是否符合预期
+    echo ""
+    echo -e "${cyan}3. 安全配置验证${white}"
     local validation_passed=true
+    local warnings=0
+
+    # 端口验证
     if [[ "$effective_port" != "$expected_port" ]]; then
-        error_msg "端口验证失败: 期望 $expected_port, 生效 $effective_port"
+        echo -e "${red}✗ 端口配置异常: 期望 $expected_port, 实际 $effective_port${white}"
         validation_passed=false
+    else
+        echo -e "${green}✓ SSH端口: $effective_port${white}"
     fi
-    if [[ "$effective_root_login" != "no" ]]; then
-        error_msg "Root登录验证失败: 期望 no, 生效 $effective_root_login"
-        validation_passed=false
+
+    # Root登录验证
+    if [[ "$effective_root_login" != "$expected_root_login" ]]; then
+        if [[ "$effective_root_login" == "no" && "$expected_root_login" == "prohibit-password" ]]; then
+            echo -e "${yellow}⚠ Root登录: $effective_root_login (比预期更严格)${white}"
+            ((warnings++))
+        else
+            echo -e "${red}✗ Root登录配置异常: 期望 $expected_root_login, 实际 $effective_root_login${white}"
+            validation_passed=false
+        fi
+    else
+        echo -e "${green}✓ Root登录: $effective_root_login${white}"
     fi
+
+    # 密码认证验证
     if [[ "$effective_password_auth" != "no" ]]; then
-        error_msg "密码认证验证失败: 期望 no, 生效 $effective_password_auth"
+        echo -e "${red}✗ 密码认证未禁用: $effective_password_auth${white}"
         validation_passed=false
+    else
+        echo -e "${green}✓ 密码认证: 已禁用${white}"
     fi
 
-    if [[ "$validation_passed" != "true" ]]; then
-        error_exit "SSH配置验证失败！服务未重启以防止锁定。请手动检查配置。"
+    # 公钥认证验证
+    if [[ "$effective_pubkey_auth" != "yes" ]]; then
+        echo -e "${red}✗ 公钥认证未启用: $effective_pubkey_auth${white}"
+        validation_passed=false
+    else
+        echo -e "${green}✓ 公钥认证: 已启用${white}"
     fi
 
-    success_msg "SSH配置验证通过: 端口=$effective_port, Root登录=$effective_root_login, 密码认证=$effective_password_auth"
+    # 显示验证结果
+    echo ""
+    if [[ "$validation_passed" == "true" ]]; then
+        success_msg "SSH配置验证通过！"
+        if [[ $warnings -gt 0 ]]; then
+            warn_msg "有 $warnings 个警告，但不影响安全性"
+        fi
+    else
+        error_exit "SSH配置验证失败！请检查配置文件或云服务商覆盖设置"
+    fi
+
+    # 6. 提供故障排除建议
+    echo ""
+    echo -e "${cyan}故障排除提示:${white}"
+    echo "- 查看完整配置: sudo sshd -T"
+    echo "- 检查配置文件: ls -la /etc/ssh/sshd_config.d/"
+    echo "- 测试连接: ssh -p $effective_port user@server"
+    echo "- 查看日志: sudo journalctl -u sshd -f"
 }
 
 # setup_ssh_keys 函数保持不变，因为它处理的是用户密钥，与sshd服务配置解耦
@@ -888,48 +1142,78 @@ CUSTOM_CONFIG_FILE=/etc/ssh/sshd_config.d/99-security-hardening.conf
 EOF
 }
 
-# SSH配置诊断和修复
+# SSH配置诊断和修复 (增强版)
 ssh_config_diagnosis() {
     clear
-    echo -e "${pink}SSH配置诊断${white}"
+    echo -e "${pink}SSH配置深度诊断${white}"
     echo "================================"
-
-    info_msg "正在诊断SSH配置..."
     echo "参考: https://linux.do/t/topic/267502"
+    echo "参考: https://unix.stackexchange.com/questions/727492/"
+    echo ""
+
+    info_msg "正在执行SSH配置深度诊断..."
     echo ""
 
     local issues=0
     local warnings=0
+    local recommendations=()
 
-    # 检查云服务商配置文件
-    echo -e "${cyan}1. 云服务商配置检查${white}"
-    if check_common_cloud_configs >/dev/null 2>&1; then
-        echo "  ⚠ 发现云服务商配置文件，可能影响自定义设置"
-        ((warnings++))
-    else
-        echo "  ✓ 未发现冲突的云服务商配置"
+    # 1. 云服务商配置检查
+    echo -e "${cyan}1. 云服务商配置冲突检查${white}"
+    local cloud_configs=()
+    local sshd_config_dir="/etc/ssh/sshd_config.d"
+
+    if [[ -d "$sshd_config_dir" ]]; then
+        while IFS= read -r -d '' file; do
+            cloud_configs+=("$file")
+        done < <(find "$sshd_config_dir" -name "*.conf" -print0 2>/dev/null)
     fi
 
-    # 检查sshd_config.d目录
-    echo -e "${cyan}2. sshd_config.d 目录检查${white}"
-    if [[ -d "/etc/ssh/sshd_config.d" ]]; then
-        local config_count=$(find /etc/ssh/sshd_config.d -name "*.conf" 2>/dev/null | wc -l)
-        echo "  ✓ sshd_config.d 目录存在"
-        echo "  配置文件数量: $config_count"
+    if [[ ${#cloud_configs[@]} -gt 0 ]]; then
+        echo "  发现配置文件:"
+        for file in "${cloud_configs[@]}"; do
+            local basename_file=$(basename "$file")
+            if [[ "$basename_file" == "99-security-hardening.conf" ]]; then
+                echo -e "    ${green}✓ $file (安全配置)${white}"
+            elif [[ "$basename_file" =~ (cloud-init|cloudimg) ]]; then
+                echo -e "    ${yellow}⚠ $file (云服务商配置)${white}"
+                ((warnings++))
+                recommendations+=("建议禁用云服务商配置: mv $file $file.bak")
+            else
+                echo -e "    ${cyan}? $file (未知配置)${white}"
+                ((warnings++))
+            fi
+        done
+    else
+        echo "  ✓ 未发现配置文件冲突"
+    fi
 
-        if [[ -f "/etc/ssh/sshd_config.d/99-security-hardening.conf" ]]; then
-            echo "  ✓ 自定义安全配置文件存在"
+    # 2. sshd_config.d 目录检查
+    echo ""
+    echo -e "${cyan}2. sshd_config.d 目录结构检查${white}"
+    if [[ -d "$sshd_config_dir" ]]; then
+        echo "  ✓ sshd_config.d 目录存在"
+        local config_count=$(find "$sshd_config_dir" -name "*.conf" 2>/dev/null | wc -l)
+        echo "  配置文件总数: $config_count"
+
+        if [[ -f "$sshd_config_dir/99-security-hardening.conf" ]]; then
+            echo "  ✓ 安全配置文件存在"
+            local config_size=$(stat -f%z "$sshd_config_dir/99-security-hardening.conf" 2>/dev/null || stat -c%s "$sshd_config_dir/99-security-hardening.conf" 2>/dev/null)
+            echo "  配置文件大小: ${config_size:-未知} 字节"
         else
-            echo "  ⚠ 未找到自定义安全配置文件"
+            echo "  ⚠ 未找到安全配置文件"
             ((warnings++))
+            recommendations+=("运行SSH安全配置: 选择菜单中的SSH配置选项")
         fi
     else
         echo "  ✗ sshd_config.d 目录不存在"
         ((issues++))
+        recommendations+=("创建目录: sudo mkdir -p /etc/ssh/sshd_config.d")
     fi
 
-    # 检查配置文件语法
-    echo -e "${cyan}3. 配置文件语法检查${white}"
+    # 3. 配置文件语法检查
+    echo ""
+    echo -e "${cyan}3. 配置文件语法验证${white}"
     if sshd -t 2>/dev/null; then
         echo "  ✓ SSH配置文件语法正确"
     else
@@ -937,70 +1221,163 @@ ssh_config_diagnosis() {
         echo "    错误详情:"
         sshd -t 2>&1 | sed 's/^/    /'
         ((issues++))
+        recommendations+=("修复语法错误后重新验证配置")
     fi
 
-    # 检查端口配置
-    echo -e "${cyan}4. 端口配置检查${white}"
-    local current_port=$(sshd -T | grep -i "^port " | awk '{print $2}')
-    echo "  当前SSH端口: $current_port"
+    # 4. 使用 sshd -T 检查最终生效配置
+    echo ""
+    echo -e "${cyan}4. 最终生效配置分析 (sshd -T)${white}"
+    if command -v sshd >/dev/null 2>&1; then
+        local effective_config
+        if effective_config=$(sshd -T 2>/dev/null); then
+            echo "  ✓ 成功获取有效配置"
 
-    if [[ "$current_port" == "22" ]]; then
-        echo "  ⚠ 使用默认端口22，建议修改"
-        ((warnings++))
-    else
-        echo "  ✓ 已修改默认端口"
-    fi
+            # 分析关键安全配置
+            local port=$(echo "$effective_config" | grep -i '^port ' | awk '{print $2}')
+            local root_login=$(echo "$effective_config" | grep -i '^permitrootlogin ' | awk '{print $2}')
+            local password_auth=$(echo "$effective_config" | grep -i '^passwordauthentication ' | awk '{print $2}')
+            local pubkey_auth=$(echo "$effective_config" | grep -i '^pubkeyauthentication ' | awk '{print $2}')
+            local x11_forward=$(echo "$effective_config" | grep -i '^x11forwarding ' | awk '{print $2}')
+            local use_dns=$(echo "$effective_config" | grep -i '^usedns ' | awk '{print $2}')
 
-    # 检查Root登录配置
-    echo -e "${cyan}5. Root登录配置检查${white}"
-    local permit_root=$(sshd -T | grep -i "^permitrootlogin " | awk '{print $2}')
-    echo "  当前配置: PermitRootLogin $permit_root"
+            echo "    关键配置项:"
+            printf "      %-20s: %s\n" "Port" "${port:-默认}"
+            printf "      %-20s: %s\n" "PermitRootLogin" "${root_login:-默认}"
+            printf "      %-20s: %s\n" "PasswordAuth" "${password_auth:-默认}"
+            printf "      %-20s: %s\n" "PubkeyAuth" "${pubkey_auth:-默认}"
+            printf "      %-20s: %s\n" "X11Forwarding" "${x11_forward:-默认}"
+            printf "      %-20s: %s\n" "UseDNS" "${use_dns:-默认}"
 
-    case "$permit_root" in
-        "no")
-            echo "  ✓ Root登录已禁用（最安全）"
-            ;;
-        "without-password"|"prohibit-password")
-            echo "  ✓ Root仅允许密钥登录（推荐）"
-            ;;
-        "yes")
-            echo "  ✗ Root允许密码登录（不安全）"
+            # 安全性评估
+            echo ""
+            echo "    安全性评估:"
+            if [[ "$password_auth" == "no" ]]; then
+                echo "      ✓ 密码认证已禁用"
+            else
+                echo "      ✗ 密码认证未禁用 (安全风险)"
+                ((issues++))
+                recommendations+=("禁用密码认证: PasswordAuthentication no")
+            fi
+
+            if [[ "$pubkey_auth" == "yes" ]]; then
+                echo "      ✓ 公钥认证已启用"
+            else
+                echo "      ⚠ 公钥认证未启用"
+                ((warnings++))
+                recommendations+=("启用公钥认证: PubkeyAuthentication yes")
+            fi
+
+            if [[ "$root_login" == "prohibit-password" ]]; then
+                echo "      ✓ Root仅允许密钥登录"
+            elif [[ "$root_login" == "no" ]]; then
+                echo "      ✓ Root登录已完全禁用"
+            else
+                echo "      ✗ Root登录配置不安全: $root_login"
+                ((issues++))
+                recommendations+=("限制Root登录: PermitRootLogin prohibit-password")
+            fi
+
+        else
+            echo "  ✗ 无法获取有效配置"
             ((issues++))
-            ;;
-        *)
-            echo "  ⚠ 未知配置值"
-            ((warnings++))
-            ;;
-    esac
-
-    # 检查密码认证
-    echo -e "${cyan}6. 密码认证检查${white}"
-    local password_auth=$(sshd -T | grep -i "^passwordauthentication " | awk '{print $2}')
-    echo "  当前配置: PasswordAuthentication $password_auth"
-
-    if [[ "$password_auth" == "no" ]]; then
-        echo "  ✓ 密码认证已禁用"
+        fi
     else
-        echo "  ⚠ 密码认证已启用，建议禁用"
-        ((warnings++))
-    fi
-
-    # 检查密钥认证
-    echo -e "${cyan}7. 密钥认证检查${white}"
-    local pubkey_auth=$(sshd -T | grep -i "^pubkeyauthentication " | awk '{print $2}')
-    echo "  当前配置: PubkeyAuthentication $pubkey_auth"
-
-    if [[ "$pubkey_auth" == "yes" ]]; then
-        echo "  ✓ 密钥认证已启用"
-    else
-        echo "  ✗ 密钥认证未启用"
+        echo "  ✗ sshd 命令不可用"
         ((issues++))
     fi
 
-    # 检查X11转发配置
-    echo -e "${cyan}8. X11转发检查${white}"
-    local x11_forward=$(sshd -T | grep -i "^x11forwarding " | awk '{print $2}')
-    echo "  当前配置: X11Forwarding $x11_forward"
+    # 5. SSH服务状态检查
+    echo ""
+    echo -e "${cyan}5. SSH服务状态检查${white}"
+    if systemctl is-active sshd >/dev/null 2>&1 || systemctl is-active ssh >/dev/null 2>&1; then
+        echo "  ✓ SSH服务正在运行"
+        local ssh_port=$(ss -tlnp | grep -E ':22[[:space:]]|:'"$port"'[[:space:]]' | head -1)
+        if [[ -n "$ssh_port" ]]; then
+            echo "  ✓ SSH端口监听正常"
+        else
+            echo "  ⚠ SSH端口监听异常"
+            ((warnings++))
+        fi
+    else
+        echo "  ✗ SSH服务未运行"
+        ((issues++))
+        recommendations+=("启动SSH服务: sudo systemctl start sshd")
+    fi
+
+    # 6. SSH密钥检查
+    echo ""
+    echo -e "${cyan}6. SSH密钥配置检查${white}"
+    local key_count=0
+    for user_home in /root /home/*; do
+        if [[ -d "$user_home/.ssh" ]]; then
+            local username=$(basename "$user_home")
+            if [[ "$user_home" == "/root" ]]; then
+                username="root"
+            fi
+
+            if [[ -f "$user_home/.ssh/authorized_keys" ]]; then
+                local keys=$(wc -l < "$user_home/.ssh/authorized_keys" 2>/dev/null || echo "0")
+                if [[ $keys -gt 0 ]]; then
+                    echo "  ✓ 用户 $username: $keys 个授权密钥"
+                    ((key_count++))
+                else
+                    echo "  ⚠ 用户 $username: 无授权密钥"
+                    ((warnings++))
+                fi
+            else
+                echo "  ⚠ 用户 $username: 未配置授权密钥"
+                ((warnings++))
+            fi
+        fi
+    done
+
+    if [[ $key_count -eq 0 ]]; then
+        echo "  ✗ 系统中未找到任何SSH密钥"
+        ((issues++))
+        recommendations+=("配置SSH密钥: 使用菜单中的密钥生成功能")
+    fi
+
+    # 7. 诊断总结
+    echo ""
+    echo "================================"
+    echo -e "${cyan}诊断总结${white}"
+    echo "问题数量: $issues"
+    echo "警告数量: $warnings"
+    echo ""
+
+    if [[ $issues -eq 0 && $warnings -eq 0 ]]; then
+        echo -e "${green}✓ SSH配置完全正常，无需修复${white}"
+    elif [[ $issues -eq 0 ]]; then
+        echo -e "${yellow}⚠ SSH配置基本正常，有 $warnings 个建议优化项${white}"
+    else
+        echo -e "${red}✗ 发现 $issues 个问题需要修复${white}"
+    fi
+
+    # 8. 修复建议
+    if [[ ${#recommendations[@]} -gt 0 ]]; then
+        echo ""
+        echo -e "${cyan}修复建议:${white}"
+        for i in "${!recommendations[@]}"; do
+            echo "$((i+1)). ${recommendations[i]}"
+        done
+        echo ""
+
+        if [[ $issues -gt 0 ]]; then
+            if confirm_operation "自动修复SSH配置问题"; then
+                fix_ssh_issues
+            fi
+        fi
+    fi
+
+    echo ""
+    echo -e "${cyan}有用的命令:${white}"
+    echo "• 查看完整配置: sudo sshd -T"
+    echo "• 测试配置语法: sudo sshd -t"
+    echo "• 查看SSH日志: sudo journalctl -u sshd -f"
+    echo "• 重启SSH服务: sudo systemctl restart sshd"
+    echo "• 检查端口监听: sudo ss -tlnp | grep ssh"
+
+    break_end
 
     if [[ "$x11_forward" == "yes" ]]; then
         echo "  ✓ X11转发已启用（符合用户偏好）"
@@ -1099,45 +1476,384 @@ restart_ssh_service() {
     success_msg "SSH服务已重启"
 }
 
-# 完整的SSH安全配置
-configure_ssh_security() {
+# SSH配置管理菜单 (新增)
+ssh_config_management() {
+    while true; do
+        clear
+        echo -e "${pink}SSH配置管理${white}"
+        echo "================================"
+        echo "参考: https://linux.do/t/topic/267502"
+        echo "参考: https://101.lug.ustc.edu.cn/"
+        echo ""
+
+        # 显示当前SSH状态
+        echo -e "${cyan}当前SSH状态:${white}"
+        if systemctl is-active sshd >/dev/null 2>&1 || systemctl is-active ssh >/dev/null 2>&1; then
+            echo "  服务状态: 运行中"
+            local current_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "未知")
+            local root_login=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "未知")
+            local password_auth=$(sshd -T 2>/dev/null | grep -i '^passwordauthentication ' | awk '{print $2}' || echo "未知")
+            echo "  当前端口: $current_port"
+            echo "  Root登录: $root_login"
+            echo "  密码认证: $password_auth"
+        else
+            echo "  服务状态: 未运行"
+        fi
+        echo ""
+
+        echo "请选择操作："
+        echo "1. 完整SSH安全配置 (推荐新用户)"
+        echo "2. SSH配置深度诊断"
+        echo "3. 仅修改SSH端口"
+        echo "4. 仅配置Root登录方式"
+        echo "5. SSH密钥管理"
+        echo "6. 查看当前SSH配置 (sshd -T)"
+        echo "7. 处理云服务商配置冲突"
+        echo "8. SSH服务管理"
+        echo "0. 返回主菜单"
+        echo ""
+
+        local choice
+        prompt_for_input "请选择 [0-8]: " choice validate_numeric_range 0 8
+
+        case $choice in
+            1)
+                configure_ssh_securely
+                ;;
+            2)
+                ssh_config_diagnosis
+                ;;
+            3)
+                change_ssh_port_only
+                ;;
+            4)
+                configure_root_login_only
+                ;;
+            5)
+                ssh_key_management_menu
+                ;;
+            6)
+                show_current_ssh_config
+                ;;
+            7)
+                handle_cloud_config_conflicts
+                ;;
+            8)
+                ssh_service_management
+                ;;
+            0)
+                break
+                ;;
+        esac
+    done
+}
+
+# 仅修改SSH端口
+change_ssh_port_only() {
     clear
-    echo -e "${pink}SSH安全配置${white}"
+    echo -e "${pink}修改SSH端口${white}"
     echo "================================"
 
-    # 显示当前配置
-    check_ssh_config
+    local current_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "22")
+    echo "当前SSH端口: $current_port"
     echo ""
 
-    echo "将进行以下安全配置："
-    echo "1. 检查并处理云服务商配置文件"
-    echo "2. 在 sshd_config.d 目录创建自定义配置"
-    echo "3. 修改SSH端口为 $SSH_DEFAULT_PORT"
-    echo "4. 配置Root用户登录方式"
-    echo "5. 禁用密码认证，启用密钥认证"
-    echo "6. 启用X11转发，禁用DNS查找"
-    echo "7. 配置连接保活参数"
-    echo "8. 验证配置有效性"
+    local new_port
+    prompt_for_input "请输入新的SSH端口 (1024-65535): " new_port validate_port
+
+    if [[ "$new_port" == "$current_port" ]]; then
+        warn_msg "新端口与当前端口相同，无需修改"
+        break_end
+        return
+    fi
+
+    echo ""
+    echo -e "${yellow}端口修改摘要:${white}"
+    echo "  当前端口: $current_port"
+    echo "  新端口: $new_port"
     echo ""
 
-    if ! confirm_operation "SSH安全配置"; then
+    if ! confirm_operation "修改SSH端口"; then
         info_msg "操作已取消"
         return
     fi
 
-    # 执行配置步骤 - 使用新的最佳实践方法
-    show_progress 1 3 "生成SSH密钥"
-    setup_ssh_keys
+    # 创建或更新配置文件
+    local config_file="/etc/ssh/sshd_config.d/99-security-hardening.conf"
 
-    show_progress 2 3 "配置SSH安全设置"
-    configure_ssh_security_settings
+    if [[ -f "$config_file" ]]; then
+        # 更新现有配置文件中的端口
+        backup_file "$config_file"
+        sed -i "s/^Port .*/Port $new_port/" "$config_file"
+        success_msg "已更新配置文件中的端口设置"
+    else
+        # 创建新的配置文件
+        mkdir -p "$(dirname "$config_file")"
+        echo "# SSH端口配置" > "$config_file"
+        echo "Port $new_port" >> "$config_file"
+        success_msg "已创建新的端口配置文件"
+    fi
 
-    show_progress 3 3 "重启SSH服务"
-    restart_ssh_service
+    # 验证配置
+    if sshd -t; then
+        success_msg "配置文件语法正确"
 
-    success_msg "SSH安全配置完成！"
+        if confirm_operation "重启SSH服务以应用新端口"; then
+            manage_service restart sshd
+            success_msg "SSH端口已修改为 $new_port"
+            warn_msg "请使用新端口连接: ssh -p $new_port user@server"
+        else
+            info_msg "配置已保存，请手动重启SSH服务"
+        fi
+    else
+        error_exit "配置文件语法错误，请检查"
+    fi
 
     break_end
+}
+
+# 仅配置Root登录方式
+configure_root_login_only() {
+    clear
+    echo -e "${pink}配置Root登录方式${white}"
+    echo "================================"
+
+    local current_root=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "未知")
+    echo "当前Root登录配置: $current_root"
+    echo ""
+
+    echo "Root登录方式选择:"
+    echo "1. prohibit-password - 仅允许密钥登录 (推荐)"
+    echo "2. no - 完全禁止Root登录"
+    echo "3. yes - 允许密码登录 (不推荐)"
+    echo ""
+
+    local choice
+    prompt_for_input "请选择 [1-3]: " choice validate_numeric_range 1 3
+
+    local new_root_login
+    case $choice in
+        1) new_root_login="prohibit-password" ;;
+        2) new_root_login="no" ;;
+        3)
+            warn_msg "允许Root密码登录存在安全风险"
+            if ! confirm_operation "确认允许Root密码登录"; then
+                info_msg "操作已取消"
+                return
+            fi
+            new_root_login="yes"
+            ;;
+    esac
+
+    if [[ "$new_root_login" == "$current_root" ]]; then
+        warn_msg "新配置与当前配置相同，无需修改"
+        break_end
+        return
+    fi
+
+    echo ""
+    echo -e "${yellow}Root登录配置摘要:${white}"
+    echo "  当前配置: $current_root"
+    echo "  新配置: $new_root_login"
+    echo ""
+
+    if ! confirm_operation "修改Root登录配置"; then
+        info_msg "操作已取消"
+        return
+    fi
+
+    # 更新配置文件
+    local config_file="/etc/ssh/sshd_config.d/99-security-hardening.conf"
+
+    if [[ -f "$config_file" ]]; then
+        backup_file "$config_file"
+        if grep -q "^PermitRootLogin" "$config_file"; then
+            sed -i "s/^PermitRootLogin .*/PermitRootLogin $new_root_login/" "$config_file"
+        else
+            echo "PermitRootLogin $new_root_login" >> "$config_file"
+        fi
+    else
+        mkdir -p "$(dirname "$config_file")"
+        echo "# Root登录配置" > "$config_file"
+        echo "PermitRootLogin $new_root_login" >> "$config_file"
+    fi
+
+    # 验证并重启
+    if sshd -t; then
+        success_msg "配置文件语法正确"
+
+        if confirm_operation "重启SSH服务以应用新配置"; then
+            manage_service restart sshd
+            success_msg "Root登录配置已修改为: $new_root_login"
+        else
+            info_msg "配置已保存，请手动重启SSH服务"
+        fi
+    else
+        error_exit "配置文件语法错误，请检查"
+    fi
+
+    break_end
+}
+
+# 显示当前SSH配置
+show_current_ssh_config() {
+    clear
+    echo -e "${pink}当前SSH配置 (sshd -T)${white}"
+    echo "================================"
+    echo "参考: https://linux.do/t/topic/267502"
+    echo ""
+
+    if ! command -v sshd >/dev/null 2>&1; then
+        error_exit "sshd 命令不可用"
+    fi
+
+    echo -e "${cyan}正在获取SSH有效配置...${white}"
+    echo ""
+
+    # 获取并显示关键配置项
+    local effective_config
+    if effective_config=$(sshd -T 2>/dev/null); then
+        echo -e "${cyan}关键安全配置项:${white}"
+        echo "================================"
+
+        local key_configs=(
+            "Port"
+            "PermitRootLogin"
+            "PasswordAuthentication"
+            "PubkeyAuthentication"
+            "X11Forwarding"
+            "UseDNS"
+            "ClientAliveInterval"
+            "ClientAliveCountMax"
+            "MaxAuthTries"
+            "LoginGraceTime"
+            "MaxStartups"
+            "MaxSessions"
+            "LogLevel"
+            "SyslogFacility"
+        )
+
+        for config in "${key_configs[@]}"; do
+            local value=$(echo "$effective_config" | grep -i "^$config " | awk '{print $2}' 2>/dev/null || echo "未设置")
+            printf "  %-20s: %s\n" "$config" "$value"
+        done
+
+        echo ""
+        echo -e "${cyan}配置文件来源:${white}"
+        echo "================================"
+        echo "主配置文件: /etc/ssh/sshd_config"
+        if [[ -d "/etc/ssh/sshd_config.d" ]]; then
+            echo "自定义配置目录: /etc/ssh/sshd_config.d/"
+            find /etc/ssh/sshd_config.d -name "*.conf" 2>/dev/null | while read -r file; do
+                echo "  - $(basename "$file")"
+            done
+        fi
+
+        echo ""
+        echo -e "${yellow}提示:${white}"
+        echo "• 配置优先级: sshd_config.d/*.conf > sshd_config"
+        echo "• 验证语法: sudo sshd -t"
+        echo "• 重启服务: sudo systemctl restart sshd"
+
+    else
+        error_exit "无法获取SSH配置，请检查sshd服务状态"
+    fi
+
+    break_end
+}
+
+# 处理云服务商配置冲突
+handle_cloud_config_conflicts() {
+    clear
+    echo -e "${pink}处理云服务商配置冲突${white}"
+    echo "================================"
+    echo "参考: https://linux.do/t/topic/267502"
+    echo "参考: https://unix.stackexchange.com/questions/727492/"
+    echo ""
+
+    check_cloud_ssh_configs
+
+    break_end
+}
+
+# SSH服务管理
+ssh_service_management() {
+    clear
+    echo -e "${pink}SSH服务管理${white}"
+    echo "================================"
+
+    # 显示服务状态
+    echo -e "${cyan}SSH服务状态:${white}"
+    if systemctl is-active sshd >/dev/null 2>&1; then
+        echo "  sshd: 运行中"
+    elif systemctl is-active ssh >/dev/null 2>&1; then
+        echo "  ssh: 运行中"
+    else
+        echo "  SSH服务: 未运行"
+    fi
+
+    echo ""
+    echo "服务管理选项:"
+    echo "1. 启动SSH服务"
+    echo "2. 停止SSH服务"
+    echo "3. 重启SSH服务"
+    echo "4. 查看SSH服务状态"
+    echo "5. 查看SSH日志"
+    echo "0. 返回"
+    echo ""
+
+    local choice
+    prompt_for_input "请选择 [0-5]: " choice validate_numeric_range 0 5
+
+    case $choice in
+        1)
+            info_msg "启动SSH服务..."
+            if manage_service start sshd || manage_service start ssh; then
+                success_msg "SSH服务启动成功"
+            else
+                error_msg "SSH服务启动失败"
+            fi
+            ;;
+        2)
+            warn_msg "停止SSH服务将断开所有SSH连接"
+            if confirm_operation "停止SSH服务"; then
+                manage_service stop sshd || manage_service stop ssh
+                warn_msg "SSH服务已停止"
+            fi
+            ;;
+        3)
+            info_msg "重启SSH服务..."
+            if sshd -t; then
+                if manage_service restart sshd || manage_service restart ssh; then
+                    success_msg "SSH服务重启成功"
+                else
+                    error_msg "SSH服务重启失败"
+                fi
+            else
+                error_msg "配置文件有语法错误，取消重启"
+            fi
+            ;;
+        4)
+            echo ""
+            echo -e "${cyan}SSH服务详细状态:${white}"
+            systemctl status sshd 2>/dev/null || systemctl status ssh 2>/dev/null || echo "SSH服务状态未知"
+            ;;
+        5)
+            echo ""
+            echo -e "${cyan}SSH服务日志 (最近20行):${white}"
+            journalctl -u sshd -n 20 --no-pager 2>/dev/null || journalctl -u ssh -n 20 --no-pager 2>/dev/null || echo "无法获取SSH日志"
+            ;;
+        0)
+            return
+            ;;
+    esac
+
+    break_end
+}
+
+# 完整的SSH安全配置 (保持兼容性)
+configure_ssh_security() {
+    configure_ssh_securely
 }
 #endregion
 
@@ -5751,34 +6467,52 @@ show_system_info() {
     echo "================================"
 }
 
-# 安全加固子菜单
+# 安全加固子菜单 (优化版)
 security_hardening_menu() {
     while true; do
         clear
         echo -e "${pink}安全加固模块${white}"
         echo "================================"
-        echo "1. ${pink}执行SSH安全加固 (推荐)${white}"
+        echo "参考: https://linux.do/t/topic/267502"
+        echo "参考: https://101.lug.ustc.edu.cn/"
+        echo ""
+
+        # 显示当前SSH状态
+        echo -e "${cyan}当前SSH状态:${white}"
+        if systemctl is-active sshd >/dev/null 2>&1 || systemctl is-active ssh >/dev/null 2>&1; then
+            local current_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "未知")
+            local password_auth=$(sshd -T 2>/dev/null | grep -i '^passwordauthentication ' | awk '{print $2}' || echo "未知")
+            echo "  服务状态: 运行中 | 端口: $current_port | 密码认证: $password_auth"
+        else
+            echo "  服务状态: 未运行"
+        fi
+        echo ""
+
+        echo "请选择操作："
+        echo "1. ${pink}SSH配置管理 (推荐)${white}"
         echo "2. 防火墙设置"
         echo "3. 用户权限管理"
         echo "4. fail2ban安装配置"
         echo "5. 系统优化调优"
         echo "6. 系统清理"
-        echo "7. SSH配置诊断"
+        echo "7. 快速SSH安全配置"
+        echo "8. SSH配置深度诊断"
         echo "================================"
         echo "0. 返回主菜单"
         echo "================================"
 
         local choice
-        prompt_for_input "请选择操作 [0-7]: " choice validate_numeric_range 0 7
+        prompt_for_input "请选择操作 [0-8]: " choice validate_numeric_range 0 8
 
         case $choice in
-            1) configure_ssh_securely ;;
+            1) ssh_config_management ;;
             2) configure_firewall ;;
             3) user_permission_management ;;
             4) install_configure_fail2ban ;;
             5) system_optimization ;;
             6) system_cleanup ;;
-            7) ssh_config_diagnosis ;;
+            7) configure_ssh_securely ;;
+            8) ssh_config_diagnosis ;;
             0) break ;;
         esac
     done
