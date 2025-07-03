@@ -105,6 +105,13 @@ info_msg() {
     log_operation "INFO: $message"
 }
 
+# 错误提示函数
+error_msg() {
+    local message="$1"
+    echo -e "${red}✗ ${message}${white}"
+    log_operation "ERROR: $message"
+}
+
 # 操作完成提示
 break_end() {
     echo -e "${green}执行完成${white}"
@@ -216,6 +223,26 @@ validate_numeric_range_or_q() {
         return 0
     fi
 
+    validate_numeric_range "$input" "$min" "$max"
+}
+
+# 验证输入是指定范围内的数字或为空（接受默认值）
+# $1: 要验证的输入
+# $2: 允许的最小值
+# $3: 允许的最大值
+# $4: 默认值（可选）
+validate_numeric_range_or_empty() {
+    local input="$1"
+    local min="$2"
+    local max="$3"
+    local default_value="$4"
+
+    # 如果输入为空，则返回成功（接受默认值）
+    if [[ -z "$input" ]]; then
+        return 0
+    fi
+
+    # 否则验证数字范围
     validate_numeric_range "$input" "$min" "$max"
 }
 #endregion
