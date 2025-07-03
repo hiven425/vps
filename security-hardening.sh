@@ -169,12 +169,39 @@ get_ssh_config_value() {
     local default_value="${2:-未设置}"
 
     # 检查sshd命令是否可用
+    local sshd_cmd="sshd"
     if ! command -v sshd >/dev/null 2>&1; then
-        echo "sshd不可用"
-        return
+        # 尝试常见的sshd路径
+        local sshd_paths=("/usr/sbin/sshd" "/sbin/sshd" "/usr/bin/sshd")
+        local found_sshd=""
+
+        for path in "${sshd_paths[@]}"; do
+            if [[ -x "$path" ]]; then
+                found_sshd="$path"
+                break
+            fi
+        done
+
+        if [[ -n "$found_sshd" ]]; then
+            sshd_cmd="$found_sshd"
+        else
+            # 如果SSH服务在运行，从配置文件读取
+            if is_ssh_service_active; then
+                local value=$(grep -i "^$config_name " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | tail -1)
+                if [[ -z "$value" ]]; then
+                    echo "$default_value"
+                else
+                    echo "$value"
+                fi
+                return
+            else
+                echo "SSH服务未运行"
+                return
+            fi
+        fi
     fi
 
-    local value=$(sshd -T 2>/dev/null | grep -i "^$config_name " | awk '{print $2}')
+    local value=$($sshd_cmd -T 2>/dev/null | grep -i "^$config_name " | awk '{print $2}')
     if [[ -z "$value" ]]; then
         echo "$default_value"
     else
@@ -327,13 +354,27 @@ install_basic_dependencies() {
 
 # 检测SSH服务名称
 detect_ssh_service_name() {
-    if systemctl list-unit-files | grep -q "^sshd.service"; then
+    # 优先检查正在运行的服务
+    if systemctl is-active sshd >/dev/null 2>&1; then
         echo "sshd"
-    elif systemctl list-unit-files | grep -q "^ssh.service"; then
+        return
+    elif systemctl is-active ssh >/dev/null 2>&1; then
+        echo "ssh"
+        return
+    fi
+
+    # 检查已安装的服务文件
+    if systemctl list-unit-files 2>/dev/null | grep -q "^sshd.service"; then
+        echo "sshd"
+    elif systemctl list-unit-files 2>/dev/null | grep -q "^ssh.service"; then
         echo "ssh"
     else
-        # 默认尝试sshd
-        echo "sshd"
+        # 根据系统类型推测
+        if [[ -f /etc/debian_version ]]; then
+            echo "ssh"  # Debian/Ubuntu 通常使用 ssh
+        else
+            echo "sshd" # CentOS/RHEL/Fedora 通常使用 sshd
+        fi
     fi
 }
 
@@ -870,15 +911,41 @@ verify_ssh_config() {
     echo "使用 'sshd -T' 检查最终生效配置"
     echo ""
 
-    # 检查sshd命令是否可用
+    # 检查SSH服务和sshd命令
     if ! command -v sshd >/dev/null 2>&1; then
-        warn_msg "sshd命令不可用，正在安装SSH服务..."
-        install_ssh_server
+        # 检查SSH服务是否已经在运行
+        if is_ssh_service_active; then
+            warn_msg "SSH服务正在运行，但sshd命令不在PATH中"
+            warn_msg "尝试查找sshd命令位置..."
+
+            # 尝试常见的sshd路径
+            local sshd_paths=("/usr/sbin/sshd" "/sbin/sshd" "/usr/bin/sshd")
+            local found_sshd=""
+
+            for path in "${sshd_paths[@]}"; do
+                if [[ -x "$path" ]]; then
+                    found_sshd="$path"
+                    break
+                fi
+            done
+
+            if [[ -n "$found_sshd" ]]; then
+                success_msg "找到sshd命令: $found_sshd"
+                # 创建临时别名
+                alias sshd="$found_sshd"
+            else
+                warn_msg "无法找到sshd命令，但SSH服务正在运行，跳过配置验证"
+                return 0
+            fi
+        else
+            warn_msg "SSH服务未运行且sshd命令不可用，正在安装SSH服务..."
+            install_ssh_server
+        fi
     fi
 
     # 1. 检查配置文件语法
     echo -e "${cyan}1. 配置文件语法检查${white}"
-    if ! sshd -t 2>/dev/null; then
+    if command -v sshd >/dev/null 2>&1 && ! sshd -t 2>/dev/null; then
         echo -e "${red}✗ SSH配置文件语法错误${white}"
         echo "错误详情:"
         sshd -t 2>&1 | sed 's/^/  /'
@@ -1055,15 +1122,15 @@ detect_cloud_ssh_keys() {
 detect_ssh_security_status() {
     local status_info=()
 
-    # 检查sshd命令是否可用
-    if ! command -v sshd >/dev/null 2>&1; then
-        status_info+=("sshd:unavailable")
+    # 检查SSH服务状态
+    if ! is_ssh_service_active; then
+        status_info+=("ssh_service:inactive")
         printf '%s\n' "${status_info[@]}"
         return
     fi
 
     # 检查Root登录方式
-    local permit_root=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "unknown")
+    local permit_root=$(get_ssh_config_value "permitrootlogin" "unknown")
     case "$permit_root" in
         "prohibit-password"|"without-password")
             status_info+=("root_login:secure")
@@ -1080,7 +1147,7 @@ detect_ssh_security_status() {
     esac
 
     # 检查密码认证
-    local password_auth=$(sshd -T 2>/dev/null | grep -i '^passwordauthentication ' | awk '{print $2}' || echo "unknown")
+    local password_auth=$(get_ssh_config_value "passwordauthentication" "unknown")
     case "$password_auth" in
         "no")
             status_info+=("password_auth:disabled")
@@ -1094,7 +1161,7 @@ detect_ssh_security_status() {
     esac
 
     # 检查SSH端口
-    local ssh_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "22")
+    local ssh_port=$(get_ssh_config_value "port" "22")
     if [[ "$ssh_port" == "22" ]]; then
         status_info+=("ssh_port:default")
     else
@@ -2129,7 +2196,8 @@ show_ssh_config_summary() {
     echo -e "${yellow}重要提醒:${white}"
     echo "1. 配置已使用 sshd_config.d 目录，符合最佳实践"
     echo "2. 使用 'sudo sshd -T' 可查看当前生效的完整配置"
-    echo "3. 重启SSH服务: sudo systemctl restart sshd"
+    local ssh_service=$(detect_ssh_service_name)
+    echo "3. 重启SSH服务: sudo systemctl restart $ssh_service"
     echo "4. 测试新配置: ssh -p $ssh_port user@server"
     echo ""
 
@@ -2461,8 +2529,9 @@ ssh_config_diagnosis() {
     echo -e "${cyan}有用的命令:${white}"
     echo "• 查看完整配置: sudo sshd -T"
     echo "• 测试配置语法: sudo sshd -t"
-    echo "• 查看SSH日志: sudo journalctl -u sshd -f"
-    echo "• 重启SSH服务: sudo systemctl restart sshd"
+    local ssh_service=$(detect_ssh_service_name)
+    echo "• 查看SSH日志: sudo journalctl -u $ssh_service -f"
+    echo "• 重启SSH服务: sudo systemctl restart $ssh_service"
     echo "• 检查端口监听: sudo ss -tlnp | grep ssh"
 
     break_end
@@ -2543,7 +2612,8 @@ fix_ssh_issues() {
     # 重新验证配置
     if sshd -t 2>/dev/null; then
         success_msg "SSH配置修复完成"
-        echo "建议重启SSH服务: systemctl restart sshd"
+        local ssh_service=$(detect_ssh_service_name)
+        echo "建议重启SSH服务: systemctl restart $ssh_service"
     else
         error_exit "配置修复失败，请手动检查"
     fi
@@ -2587,9 +2657,30 @@ get_ssh_service_status() {
 restart_ssh_service() {
     info_msg "重启SSH服务..."
 
-    # 测试配置文件语法
-    if ! sshd -t; then
-        error_exit "SSH配置文件语法错误，请检查配置"
+    # 测试配置文件语法（如果sshd命令可用）
+    if command -v sshd >/dev/null 2>&1; then
+        if ! sshd -t; then
+            error_exit "SSH配置文件语法错误，请检查配置"
+        fi
+    else
+        # 尝试查找sshd命令
+        local sshd_paths=("/usr/sbin/sshd" "/sbin/sshd" "/usr/bin/sshd")
+        local found_sshd=""
+
+        for path in "${sshd_paths[@]}"; do
+            if [[ -x "$path" ]]; then
+                found_sshd="$path"
+                break
+            fi
+        done
+
+        if [[ -n "$found_sshd" ]]; then
+            if ! "$found_sshd" -t; then
+                error_exit "SSH配置文件语法错误，请检查配置"
+            fi
+        else
+            warn_msg "无法验证SSH配置语法，但继续重启服务"
+        fi
     fi
 
     # 重启SSH服务
@@ -2968,11 +3059,16 @@ show_current_ssh_config() {
         echo ""
         echo -e "${yellow}提示:${white}"
         echo "• 配置优先级: sshd_config.d/*.conf > sshd_config"
-        echo "• 验证语法: sudo sshd -t"
-        echo "• 重启服务: sudo systemctl restart sshd"
+        if command -v sshd >/dev/null 2>&1; then
+            echo "• 验证语法: sudo sshd -t"
+        else
+            echo "• 验证语法: 检查配置文件语法"
+        fi
+        local ssh_service=$(detect_ssh_service_name)
+        echo "• 重启服务: sudo systemctl restart $ssh_service"
 
     else
-        error_exit "无法获取SSH配置，请检查sshd服务状态"
+        error_exit "无法获取SSH配置，请检查SSH服务状态"
     fi
 
     break_end
@@ -3000,13 +3096,8 @@ ssh_service_management() {
 
     # 显示服务状态
     echo -e "${cyan}SSH服务状态:${white}"
-    if systemctl is-active sshd >/dev/null 2>&1; then
-        echo "  sshd: 运行中"
-    elif systemctl is-active ssh >/dev/null 2>&1; then
-        echo "  ssh: 运行中"
-    else
-        echo "  SSH服务: 未运行"
-    fi
+    local ssh_status=$(get_ssh_service_status)
+    echo "  SSH: $ssh_status"
 
     echo ""
     echo "服务管理选项:"
@@ -3039,7 +3130,31 @@ ssh_service_management() {
             ;;
         3)
             info_msg "重启SSH服务..."
-            if sshd -t; then
+            local syntax_ok=true
+
+            # 检查配置语法
+            if command -v sshd >/dev/null 2>&1; then
+                if ! sshd -t; then
+                    syntax_ok=false
+                fi
+            else
+                # 尝试查找sshd命令
+                local sshd_paths=("/usr/sbin/sshd" "/sbin/sshd" "/usr/bin/sshd")
+                local found_sshd=""
+
+                for path in "${sshd_paths[@]}"; do
+                    if [[ -x "$path" ]]; then
+                        found_sshd="$path"
+                        break
+                    fi
+                done
+
+                if [[ -n "$found_sshd" ]] && ! "$found_sshd" -t; then
+                    syntax_ok=false
+                fi
+            fi
+
+            if [[ "$syntax_ok" == true ]]; then
                 if manage_ssh_service restart; then
                     success_msg "SSH服务重启成功"
                 else
@@ -3052,7 +3167,8 @@ ssh_service_management() {
         4)
             echo ""
             echo -e "${cyan}SSH服务详细状态:${white}"
-            systemctl status sshd 2>/dev/null || systemctl status ssh 2>/dev/null || echo "SSH服务状态未知"
+            local ssh_service=$(detect_ssh_service_name)
+            systemctl status "$ssh_service" 2>/dev/null || echo "SSH服务状态未知"
             ;;
         5)
             echo ""
@@ -8709,8 +8825,8 @@ show_all_services_status() {
 
     # SSH服务状态
     echo -e "${cyan}SSH服务状态:${white}"
-    local ssh_status=$(systemctl is-active sshd 2>/dev/null || systemctl is-active ssh 2>/dev/null || echo "unknown")
-    local ssh_port=$(grep -E "^Port " "$SSH_CONFIG" | awk '{print $2}' 2>/dev/null || echo "22")
+    local ssh_status=$(get_ssh_service_status)
+    local ssh_port=$(get_ssh_config_value "port" "22")
     echo "  状态: $ssh_status"
     echo "  端口: $ssh_port"
     echo "  配置: $SSH_CONFIG"
@@ -9369,9 +9485,10 @@ show_system_status() {
 
     # SSH服务状态
     echo -e "${cyan}SSH服务状态:${white}"
-    local ssh_port=$(grep -E "^Port " "$SSH_CONFIG" | awk '{print $2}' 2>/dev/null || echo "22")
+    local ssh_port=$(get_ssh_config_value "port" "22")
+    local ssh_status=$(get_ssh_service_status)
     echo "  端口: $ssh_port"
-    echo "  状态: $(systemctl is-active sshd 2>/dev/null || systemctl is-active ssh 2>/dev/null || echo "未知")"
+    echo "  状态: $ssh_status"
     echo ""
 
     # 防火墙状态
