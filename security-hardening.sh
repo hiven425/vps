@@ -197,7 +197,6 @@ show_progress() {
 # 初始化授权状态检查
 authorization_check() {
     if grep -q '^user_authorization="true"' /usr/local/bin/security-hardening > /dev/null 2>&1; then
-        sed -i 's/^user_authorization="false"/user_authorization="true"/' "$0"
         user_authorization="true"
     fi
 }
@@ -217,7 +216,6 @@ user_agreement() {
     
     if [[ "$user_input" =~ ^[Yy]$ ]]; then
         echo "已同意用户协议"
-        sed -i 's/^user_authorization="false"/user_authorization="true"/' "$0"
         sed -i 's/^user_authorization="false"/user_authorization="true"/' /usr/local/bin/security-hardening 2>/dev/null
         user_authorization="true"
         # 安装基础依赖
