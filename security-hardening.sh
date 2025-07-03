@@ -168,6 +168,12 @@ get_ssh_config_value() {
     local config_name="$1"
     local default_value="${2:-未设置}"
 
+    # 检查sshd命令是否可用
+    if ! command -v sshd >/dev/null 2>&1; then
+        echo "sshd不可用"
+        return
+    fi
+
     local value=$(sshd -T 2>/dev/null | grep -i "^$config_name " | awk '{print $2}')
     if [[ -z "$value" ]]; then
         echo "$default_value"
@@ -317,6 +323,45 @@ install_basic_dependencies() {
         dnf install -y curl wget sudo systemd > /dev/null 2>&1
     fi
     success_msg "基础依赖安装完成"
+}
+
+# 安装SSH服务
+install_ssh_server() {
+    info_msg "正在安装SSH服务..."
+
+    case $PKG_MANAGER in
+        apt)
+            apt-get update -y > /dev/null 2>&1
+            apt-get install -y openssh-server > /dev/null 2>&1
+            ;;
+        yum)
+            yum install -y openssh-server > /dev/null 2>&1
+            ;;
+        dnf)
+            dnf install -y openssh-server > /dev/null 2>&1
+            ;;
+        *)
+            error_exit "不支持的包管理器: $PKG_MANAGER"
+            ;;
+    esac
+
+    # 启动并启用SSH服务
+    if systemctl enable sshd 2>/dev/null || systemctl enable ssh 2>/dev/null; then
+        if systemctl start sshd 2>/dev/null || systemctl start ssh 2>/dev/null; then
+            success_msg "SSH服务安装并启动成功"
+        else
+            warn_msg "SSH服务安装成功但启动失败"
+        fi
+    else
+        warn_msg "SSH服务安装成功但启用失败"
+    fi
+
+    # 验证安装
+    if command -v sshd >/dev/null 2>&1; then
+        success_msg "sshd命令现在可用"
+    else
+        error_exit "SSH服务安装失败，sshd命令仍不可用"
+    fi
 }
 #endregion
 
@@ -808,6 +853,12 @@ verify_ssh_config() {
     echo "使用 'sshd -T' 检查最终生效配置"
     echo ""
 
+    # 检查sshd命令是否可用
+    if ! command -v sshd >/dev/null 2>&1; then
+        warn_msg "sshd命令不可用，正在安装SSH服务..."
+        install_ssh_server
+    fi
+
     # 1. 检查配置文件语法
     echo -e "${cyan}1. 配置文件语法检查${white}"
     if ! sshd -t 2>/dev/null; then
@@ -986,6 +1037,13 @@ detect_cloud_ssh_keys() {
 # 检测当前SSH配置状态
 detect_ssh_security_status() {
     local status_info=()
+
+    # 检查sshd命令是否可用
+    if ! command -v sshd >/dev/null 2>&1; then
+        status_info+=("sshd:unavailable")
+        printf '%s\n' "${status_info[@]}"
+        return
+    fi
 
     # 检查Root登录方式
     local permit_root=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "unknown")
