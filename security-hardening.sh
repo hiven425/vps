@@ -1890,40 +1890,131 @@ install_firewall() {
     esac
 }
 
-# UFW防火墙配置
-configure_ufw() {
-    info_msg "配置UFW防火墙..."
+# UFW防火墙配置 (优化版)
+configure_ufw_optimized() {
+    local ssh_port=${1:-22}
+
+    info_msg "配置UFW防火墙 (SSH端口: $ssh_port)..."
 
     # 重置UFW规则
+    echo "重置防火墙规则..."
     ufw --force reset > /dev/null 2>&1
 
     # 设置默认策略
-    ufw default deny incoming
-    ufw default allow outgoing
+    echo "设置默认策略..."
+    ufw default deny incoming > /dev/null 2>&1
+    ufw default allow outgoing > /dev/null 2>&1
 
-    # 获取SSH端口
-    local ssh_port=$(sshd -T | grep -i "^port " | awk '{print $2}' 2>/dev/null || echo "22")
-
-    # 允许SSH
-    ufw allow "$ssh_port"/tcp comment 'SSH'
+    # 允许SSH (使用检测到的端口)
+    echo "配置SSH访问规则 (端口: $ssh_port)..."
+    ufw allow "$ssh_port"/tcp comment 'SSH Access' > /dev/null 2>&1
 
     # 允许HTTP/HTTPS
-    ufw allow 80/tcp comment 'HTTP'
-    ufw allow 443/tcp comment 'HTTPS'
+    echo "配置Web服务端口..."
+    ufw allow 80/tcp comment 'HTTP Web' > /dev/null 2>&1
+    ufw allow 443/tcp comment 'HTTPS Web' > /dev/null 2>&1
 
     # 允许常用代理端口
-    ufw allow 8080/tcp comment 'Proxy'
-    ufw allow 8443/tcp comment 'Proxy HTTPS'
+    echo "配置代理服务端口..."
+    ufw allow 8080/tcp comment 'Proxy HTTP' > /dev/null 2>&1
+    ufw allow 8443/tcp comment 'Proxy HTTPS' > /dev/null 2>&1
 
     # IPv6支持
     if [[ "$IPV6_ADDRESS" != "不支持" && "$IPV6_ADDRESS" != "" ]]; then
-        sed -i 's/IPV6=no/IPV6=yes/' /etc/default/ufw
+        echo "启用IPv6支持..."
+        sed -i 's/IPV6=no/IPV6=yes/' /etc/default/ufw 2>/dev/null
+    fi
+
+    # 基础DDoS防护
+    echo "配置DDoS防护规则..."
+    # 限制SSH连接频率
+    ufw limit "$ssh_port"/tcp comment 'SSH Rate Limit' > /dev/null 2>&1
+
+    # 启用UFW
+    echo "启用UFW防火墙..."
+    ufw --force enable > /dev/null 2>&1
+
+    success_msg "UFW防火墙配置完成"
+}
+
+# UFW自定义配置
+configure_ufw_custom() {
+    local ssh_port=$1
+    local enable_ssh=$2
+    local enable_http=$3
+    local enable_https=$4
+    local enable_proxy_8080=$5
+    local enable_proxy_8443=$6
+    shift 6
+    local custom_ports=("$@")
+
+    info_msg "应用自定义UFW配置..."
+
+    # 重置UFW规则
+    echo "重置防火墙规则..."
+    ufw --force reset > /dev/null 2>&1
+
+    # 设置默认策略
+    echo "设置默认策略..."
+    ufw default deny incoming > /dev/null 2>&1
+    ufw default allow outgoing > /dev/null 2>&1
+
+    # SSH端口
+    if [[ "$enable_ssh" == "y" ]]; then
+        echo "配置SSH访问 (端口: $ssh_port)..."
+        ufw limit "$ssh_port"/tcp comment 'SSH Access' > /dev/null 2>&1
+    fi
+
+    # HTTP端口
+    if [[ "$enable_http" == "y" ]]; then
+        echo "配置HTTP访问 (端口: 80)..."
+        ufw allow 80/tcp comment 'HTTP Web' > /dev/null 2>&1
+    fi
+
+    # HTTPS端口
+    if [[ "$enable_https" == "y" ]]; then
+        echo "配置HTTPS访问 (端口: 443)..."
+        ufw allow 443/tcp comment 'HTTPS Web' > /dev/null 2>&1
+    fi
+
+    # 代理端口8080
+    if [[ "$enable_proxy_8080" == "y" ]]; then
+        echo "配置代理端口 8080..."
+        ufw allow 8080/tcp comment 'Proxy HTTP' > /dev/null 2>&1
+    fi
+
+    # 代理端口8443
+    if [[ "$enable_proxy_8443" == "y" ]]; then
+        echo "配置代理端口 8443..."
+        ufw allow 8443/tcp comment 'Proxy HTTPS' > /dev/null 2>&1
+    fi
+
+    # 自定义端口
+    if [[ ${#custom_ports[@]} -gt 0 ]]; then
+        echo "配置自定义端口..."
+        for port in "${custom_ports[@]}"; do
+            echo "  添加端口: $port"
+            ufw allow "$port" comment 'Custom Port' > /dev/null 2>&1
+        done
+    fi
+
+    # IPv6支持
+    if [[ "$IPV6_ADDRESS" != "不支持" && "$IPV6_ADDRESS" != "" ]]; then
+        echo "启用IPv6支持..."
+        sed -i 's/IPV6=no/IPV6=yes/' /etc/default/ufw 2>/dev/null
     fi
 
     # 启用UFW
-    ufw --force enable
+    echo "启用UFW防火墙..."
+    ufw --force enable > /dev/null 2>&1
 
-    success_msg "UFW防火墙配置完成"
+    success_msg "自定义UFW配置完成"
+}
+
+# UFW防火墙配置 (保持兼容性)
+configure_ufw() {
+    local ssh_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "22")
+    configure_ufw_optimized "$ssh_port"
 }
 
 # iptables防火墙配置
@@ -2011,7 +2102,398 @@ configure_iptables() {
     success_msg "iptables防火墙配置完成"
 }
 
-# 显示防火墙状态
+# 显示详细防火墙状态
+show_firewall_status_detailed() {
+    clear
+    echo -e "${pink}防火墙状态详情${white}"
+    echo "================================"
+
+    local fw_type=$(detect_firewall_type)
+    echo "防火墙类型: $fw_type"
+    echo ""
+
+    case $fw_type in
+        ufw)
+            echo -e "${cyan}UFW状态:${white}"
+            if command -v ufw >/dev/null 2>&1; then
+                ufw status verbose 2>/dev/null || echo "无法获取UFW状态"
+                echo ""
+                echo -e "${cyan}UFW规则列表:${white}"
+                ufw status numbered 2>/dev/null || echo "无法获取UFW规则"
+            else
+                echo "UFW未安装"
+            fi
+            ;;
+        iptables)
+            echo -e "${cyan}iptables规则:${white}"
+            if command -v iptables >/dev/null 2>&1; then
+                iptables -L -n --line-numbers 2>/dev/null || echo "无法获取iptables规则"
+
+                if command -v ip6tables >/dev/null 2>&1; then
+                    echo ""
+                    echo -e "${cyan}ip6tables规则:${white}"
+                    ip6tables -L -n --line-numbers 2>/dev/null || echo "无法获取ip6tables规则"
+                fi
+            else
+                echo "iptables未安装"
+            fi
+            ;;
+        none)
+            echo "未检测到防火墙"
+            echo ""
+            echo -e "${yellow}建议:${white}"
+            echo "1. 安装UFW: sudo apt install ufw"
+            echo "2. 或安装iptables: sudo apt install iptables"
+            ;;
+    esac
+
+    # 显示当前监听端口
+    echo ""
+    echo -e "${cyan}当前监听端口:${white}"
+    if command -v ss >/dev/null 2>&1; then
+        ss -tlnp | grep LISTEN | head -10
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -tlnp | grep LISTEN | head -10
+    else
+        echo "无法获取端口信息"
+    fi
+
+    break_end
+}
+
+# 添加自定义防火墙规则
+add_custom_firewall_rule() {
+    clear
+    echo -e "${pink}添加自定义防火墙规则${white}"
+    echo "================================"
+
+    local fw_type=$(detect_firewall_type)
+
+    if [[ "$fw_type" == "none" ]]; then
+        error_msg "未检测到防火墙，请先安装防火墙"
+        break_end
+        return
+    fi
+
+    echo "当前防火墙类型: $fw_type"
+    echo ""
+
+    echo "规则类型选择："
+    echo "1. 允许特定端口 (TCP)"
+    echo "2. 允许特定端口 (UDP)"
+    echo "3. 允许端口范围"
+    echo "4. 允许特定IP访问"
+    echo "5. 拒绝特定IP访问"
+    echo ""
+
+    local rule_type
+    prompt_for_input "请选择规则类型 [1-5]: " rule_type validate_numeric_range 1 5
+
+    case $rule_type in
+        1)
+            local port
+            prompt_for_input "请输入TCP端口 (1-65535): " port validate_port
+            local comment
+            read -p "请输入规则描述 (可选): " comment
+            comment=${comment:-"Custom TCP Port"}
+
+            case $fw_type in
+                ufw)
+                    ufw allow "$port"/tcp comment "$comment"
+                    ;;
+                iptables)
+                    iptables -A INPUT -p tcp --dport "$port" -j ACCEPT
+                    save_iptables_rules
+                    ;;
+            esac
+            success_msg "已添加TCP端口 $port 的允许规则"
+            ;;
+        2)
+            local port
+            prompt_for_input "请输入UDP端口 (1-65535): " port validate_port
+            local comment
+            read -p "请输入规则描述 (可选): " comment
+            comment=${comment:-"Custom UDP Port"}
+
+            case $fw_type in
+                ufw)
+                    ufw allow "$port"/udp comment "$comment"
+                    ;;
+                iptables)
+                    iptables -A INPUT -p udp --dport "$port" -j ACCEPT
+                    save_iptables_rules
+                    ;;
+            esac
+            success_msg "已添加UDP端口 $port 的允许规则"
+            ;;
+        3)
+            local start_port end_port
+            prompt_for_input "请输入起始端口: " start_port validate_port
+            prompt_for_input "请输入结束端口: " end_port validate_port
+
+            if [[ $start_port -gt $end_port ]]; then
+                error_msg "起始端口不能大于结束端口"
+                break_end
+                return
+            fi
+
+            local comment
+            read -p "请输入规则描述 (可选): " comment
+            comment=${comment:-"Custom Port Range"}
+
+            case $fw_type in
+                ufw)
+                    ufw allow "$start_port:$end_port"/tcp comment "$comment"
+                    ;;
+                iptables)
+                    iptables -A INPUT -p tcp --dport "$start_port:$end_port" -j ACCEPT
+                    save_iptables_rules
+                    ;;
+            esac
+            success_msg "已添加端口范围 $start_port-$end_port 的允许规则"
+            ;;
+        4)
+            local ip_address
+            read -p "请输入要允许的IP地址: " ip_address
+
+            if ! [[ "$ip_address" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+                error_msg "IP地址格式无效"
+                break_end
+                return
+            fi
+
+            case $fw_type in
+                ufw)
+                    ufw allow from "$ip_address"
+                    ;;
+                iptables)
+                    iptables -A INPUT -s "$ip_address" -j ACCEPT
+                    save_iptables_rules
+                    ;;
+            esac
+            success_msg "已添加IP $ip_address 的允许规则"
+            ;;
+        5)
+            local ip_address
+            read -p "请输入要拒绝的IP地址: " ip_address
+
+            if ! [[ "$ip_address" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+                error_msg "IP地址格式无效"
+                break_end
+                return
+            fi
+
+            case $fw_type in
+                ufw)
+                    ufw deny from "$ip_address"
+                    ;;
+                iptables)
+                    iptables -A INPUT -s "$ip_address" -j DROP
+                    save_iptables_rules
+                    ;;
+            esac
+            success_msg "已添加IP $ip_address 的拒绝规则"
+            ;;
+    esac
+
+    echo ""
+    echo -e "${cyan}更新后的防火墙状态:${white}"
+    show_firewall_status
+
+    break_end
+}
+
+# 删除防火墙规则
+remove_firewall_rule() {
+    clear
+    echo -e "${pink}删除防火墙规则${white}"
+    echo "================================"
+
+    local fw_type=$(detect_firewall_type)
+
+    if [[ "$fw_type" == "none" ]]; then
+        error_msg "未检测到防火墙"
+        break_end
+        return
+    fi
+
+    echo "当前防火墙类型: $fw_type"
+    echo ""
+
+    case $fw_type in
+        ufw)
+            echo -e "${cyan}当前UFW规则:${white}"
+            ufw status numbered
+            echo ""
+
+            local rule_number
+            read -p "请输入要删除的规则编号: " rule_number
+
+            if [[ "$rule_number" =~ ^[0-9]+$ ]]; then
+                if confirm_operation "删除规则 #$rule_number"; then
+                    ufw --force delete "$rule_number"
+                    success_msg "规则已删除"
+                else
+                    info_msg "操作已取消"
+                fi
+            else
+                error_msg "无效的规则编号"
+            fi
+            ;;
+        iptables)
+            echo -e "${cyan}当前iptables规则:${white}"
+            iptables -L INPUT --line-numbers
+            echo ""
+
+            local rule_number
+            read -p "请输入要删除的规则编号: " rule_number
+
+            if [[ "$rule_number" =~ ^[0-9]+$ ]]; then
+                if confirm_operation "删除iptables规则 #$rule_number"; then
+                    iptables -D INPUT "$rule_number"
+                    save_iptables_rules
+                    success_msg "规则已删除"
+                else
+                    info_msg "操作已取消"
+                fi
+            else
+                error_msg "无效的规则编号"
+            fi
+            ;;
+    esac
+
+    break_end
+}
+
+# 重置防火墙配置
+reset_firewall_config() {
+    clear
+    echo -e "${pink}重置防火墙配置${white}"
+    echo "================================"
+
+    local fw_type=$(detect_firewall_type)
+
+    if [[ "$fw_type" == "none" ]]; then
+        error_msg "未检测到防火墙"
+        break_end
+        return
+    fi
+
+    echo "当前防火墙类型: $fw_type"
+    echo ""
+    echo -e "${red}警告: 此操作将删除所有防火墙规则！${white}"
+    echo "重置后将只保留基本的SSH访问规则"
+    echo ""
+
+    if ! confirm_operation "重置防火墙配置"; then
+        info_msg "操作已取消"
+        break_end
+        return
+    fi
+
+    local ssh_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "22")
+
+    case $fw_type in
+        ufw)
+            echo "重置UFW配置..."
+            ufw --force reset
+            ufw default deny incoming
+            ufw default allow outgoing
+            ufw allow "$ssh_port"/tcp comment 'SSH Access'
+            ufw --force enable
+            ;;
+        iptables)
+            echo "重置iptables配置..."
+            iptables -F
+            iptables -X
+            iptables -P INPUT DROP
+            iptables -P FORWARD DROP
+            iptables -P OUTPUT ACCEPT
+            iptables -A INPUT -i lo -j ACCEPT
+            iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+            iptables -A INPUT -p tcp --dport "$ssh_port" -j ACCEPT
+            save_iptables_rules
+            ;;
+    esac
+
+    success_msg "防火墙配置已重置，仅保留SSH端口 $ssh_port"
+    echo ""
+    show_firewall_status
+
+    break_end
+}
+
+# 安装/切换防火墙类型
+install_switch_firewall() {
+    clear
+    echo -e "${pink}安装/切换防火墙类型${white}"
+    echo "================================"
+
+    local current_fw=$(detect_firewall_type)
+    echo "当前防火墙类型: $current_fw"
+    echo ""
+
+    echo "可用的防火墙类型："
+    echo "1. UFW (推荐，易于管理)"
+    echo "2. iptables (高级用户)"
+    echo ""
+
+    local choice
+    prompt_for_input "请选择要安装的防火墙类型 [1-2]: " choice validate_numeric_range 1 2
+
+    case $choice in
+        1)
+            if [[ "$current_fw" == "ufw" ]]; then
+                info_msg "UFW已经安装"
+            else
+                echo "安装UFW..."
+                install_firewall ufw
+                if [[ "$current_fw" == "iptables" ]]; then
+                    warn_msg "检测到iptables，建议先备份现有规则"
+                fi
+                success_msg "UFW安装完成"
+            fi
+            ;;
+        2)
+            if [[ "$current_fw" == "iptables" ]]; then
+                info_msg "iptables已经安装"
+            else
+                echo "安装iptables..."
+                install_firewall iptables
+                if [[ "$current_fw" == "ufw" ]]; then
+                    warn_msg "检测到UFW，建议先禁用UFW: sudo ufw disable"
+                fi
+                success_msg "iptables安装完成"
+            fi
+            ;;
+    esac
+
+    break_end
+}
+
+# 保存iptables规则
+save_iptables_rules() {
+    case $PKG_MANAGER in
+        apt)
+            if [[ -d "/etc/iptables" ]]; then
+                iptables-save > /etc/iptables/rules.v4 2>/dev/null
+                if command_exists ip6tables; then
+                    ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
+                fi
+            fi
+            ;;
+        yum|dnf)
+            if command_exists service; then
+                service iptables save 2>/dev/null
+                if command_exists ip6tables; then
+                    service ip6tables save 2>/dev/null
+                fi
+            fi
+            ;;
+    esac
+}
+
+# 显示防火墙状态 (保持兼容性)
 show_firewall_status() {
     local fw_type=$(detect_firewall_type)
 
@@ -2019,10 +2501,10 @@ show_firewall_status() {
 
     case $fw_type in
         ufw)
-            ufw status verbose
+            ufw status verbose 2>/dev/null || echo "无法获取UFW状态"
             ;;
         iptables)
-            iptables -L -n --line-numbers
+            iptables -L -n --line-numbers 2>/dev/null || echo "无法获取iptables状态"
             ;;
         none)
             echo "未检测到防火墙"
@@ -2030,35 +2512,101 @@ show_firewall_status() {
     esac
 }
 
-# 完整的防火墙配置
-configure_firewall() {
+# 防火墙配置菜单 (优化版)
+firewall_menu() {
+    while true; do
+        clear
+        echo -e "${pink}防火墙配置管理${white}"
+        echo "================================"
+
+        local fw_type=$(detect_firewall_type)
+        echo "检测到的防火墙类型: $fw_type"
+
+        # 显示当前防火墙状态
+        echo ""
+        echo -e "${cyan}当前防火墙状态:${white}"
+        case $fw_type in
+            ufw)
+                if ufw status | grep -q "Status: active"; then
+                    echo "  UFW状态: 活跃"
+                    local rule_count=$(ufw status numbered | grep -c "^\[" || echo "0")
+                    echo "  规则数量: $rule_count"
+                else
+                    echo "  UFW状态: 未启用"
+                fi
+                ;;
+            iptables)
+                local rule_count=$(iptables -L INPUT | wc -l)
+                echo "  iptables规则数: $((rule_count - 2))"
+                ;;
+            none)
+                echo "  状态: 未安装防火墙"
+                ;;
+        esac
+
+        echo ""
+        echo "请选择操作："
+        echo "1. 快速防火墙配置 (推荐)"
+        echo "2. 自定义防火墙配置"
+        echo "3. 查看防火墙状态"
+        echo "4. 添加自定义端口规则"
+        echo "5. 删除防火墙规则"
+        echo "6. 重置防火墙配置"
+        echo "7. 安装/切换防火墙类型"
+        echo "================================"
+        echo "0. 返回上级菜单"
+        echo "================================"
+
+        local choice
+        prompt_for_input "请选择操作 [0-7]: " choice validate_numeric_range 0 7
+
+        case $choice in
+            1) configure_firewall_quick ;;
+            2) configure_firewall_custom ;;
+            3) show_firewall_status_detailed ;;
+            4) add_custom_firewall_rule ;;
+            5) remove_firewall_rule ;;
+            6) reset_firewall_config ;;
+            7) install_switch_firewall ;;
+            0) break ;;
+        esac
+    done
+}
+
+# 快速防火墙配置
+configure_firewall_quick() {
     clear
-    echo -e "${pink}防火墙配置${white}"
+    echo -e "${pink}快速防火墙配置${white}"
     echo "================================"
 
     local fw_type=$(detect_firewall_type)
 
-    echo "检测到的防火墙类型: $fw_type"
-    echo ""
-
     if [[ "$fw_type" == "none" ]]; then
         echo "未检测到防火墙，将安装UFW"
-        fw_type="ufw"
         install_firewall ufw
+        fw_type="ufw"
     fi
+
+    # 自动检测当前SSH端口
+    local current_ssh_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "22")
+
+    echo -e "${cyan}自动检测到的配置:${white}"
+    echo "  防火墙类型: $fw_type"
+    echo "  当前SSH端口: $current_ssh_port"
+    echo ""
 
     echo "将配置以下防火墙规则："
     echo "1. 默认拒绝所有入站连接"
-    echo "2. 允许SSH端口 ($(grep -E "^Port " "$SSH_CONFIG" | awk '{print $2}' 2>/dev/null || echo "22"))"
+    echo "2. 允许SSH端口 ($current_ssh_port)"
     echo "3. 允许HTTP (80) 和HTTPS (443)"
-    echo "4. 允许代理端口 (8080, 8443)"
-    echo "5. 配置DDoS防护规则"
+    echo "4. 允许常用代理端口 (8080, 8443)"
+    echo "5. 配置基础DDoS防护"
     if [[ "$IPV6_ADDRESS" != "不支持" && "$IPV6_ADDRESS" != "" ]]; then
         echo "6. 启用IPv6支持"
     fi
     echo ""
 
-    if ! confirm_operation "防火墙配置"; then
+    if ! confirm_operation "应用快速防火墙配置"; then
         info_msg "操作已取消"
         return
     fi
@@ -2066,37 +2614,157 @@ configure_firewall() {
     # 执行配置
     case $fw_type in
         ufw)
-            show_progress 1 3 "配置UFW防火墙"
-            configure_ufw
+            configure_ufw_optimized "$current_ssh_port"
             ;;
         iptables)
-            show_progress 1 3 "配置iptables防火墙"
-            configure_iptables
+            configure_iptables_optimized "$current_ssh_port"
             ;;
     esac
 
-    show_progress 2 3 "启用防火墙服务"
-    case $fw_type in
-        ufw)
-            manage_service enable ufw
-            ;;
-        iptables)
-            manage_service enable iptables
-            if command_exists ip6tables; then
-                manage_service enable ip6tables
-            fi
-            ;;
-    esac
-
-    show_progress 3 3 "配置完成"
-
-    echo ""
-    success_msg "防火墙配置完成！"
+    success_msg "快速防火墙配置完成！"
     echo ""
     show_firewall_status
-    echo ""
 
     break_end
+}
+
+# 自定义防火墙配置
+configure_firewall_custom() {
+    clear
+    echo -e "${pink}自定义防火墙配置${white}"
+    echo "================================"
+
+    local fw_type=$(detect_firewall_type)
+
+    if [[ "$fw_type" == "none" ]]; then
+        echo "未检测到防火墙，将安装UFW"
+        install_firewall ufw
+        fw_type="ufw"
+    fi
+
+    # 获取SSH端口
+    local current_ssh_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "22")
+    echo "当前SSH端口: $current_ssh_port"
+    echo ""
+
+    # 基础端口配置
+    echo -e "${cyan}基础端口配置:${white}"
+
+    local enable_ssh="y"
+    if confirm_operation "允许SSH端口 ($current_ssh_port)"; then
+        enable_ssh="y"
+    else
+        enable_ssh="n"
+        warn_msg "警告: 禁用SSH端口可能导致无法远程连接"
+    fi
+
+    local enable_http="n"
+    if confirm_operation "允许HTTP端口 (80)"; then
+        enable_http="y"
+    fi
+
+    local enable_https="n"
+    if confirm_operation "允许HTTPS端口 (443)"; then
+        enable_https="y"
+    fi
+
+    # 代理端口配置
+    echo ""
+    echo -e "${cyan}代理端口配置:${white}"
+
+    local enable_proxy_8080="n"
+    if confirm_operation "允许代理端口 8080"; then
+        enable_proxy_8080="y"
+    fi
+
+    local enable_proxy_8443="n"
+    if confirm_operation "允许代理端口 8443"; then
+        enable_proxy_8443="y"
+    fi
+
+    # 自定义端口
+    echo ""
+    echo -e "${cyan}自定义端口配置:${white}"
+    local custom_ports=()
+
+    while true; do
+        echo "当前自定义端口: ${custom_ports[*]:-无}"
+        echo ""
+        echo "1. 添加TCP端口"
+        echo "2. 添加UDP端口"
+        echo "3. 添加端口范围"
+        echo "4. 完成配置"
+        echo ""
+
+        local port_choice
+        prompt_for_input "请选择 [1-4]: " port_choice validate_numeric_range 1 4
+
+        case $port_choice in
+            1)
+                local tcp_port
+                prompt_for_input "请输入TCP端口 (1-65535): " tcp_port validate_port
+                custom_ports+=("$tcp_port/tcp")
+                ;;
+            2)
+                local udp_port
+                prompt_for_input "请输入UDP端口 (1-65535): " udp_port validate_port
+                custom_ports+=("$udp_port/udp")
+                ;;
+            3)
+                local start_port end_port
+                prompt_for_input "请输入起始端口: " start_port validate_port
+                prompt_for_input "请输入结束端口: " end_port validate_port
+                if [[ $start_port -le $end_port ]]; then
+                    custom_ports+=("$start_port:$end_port/tcp")
+                else
+                    error_msg "起始端口不能大于结束端口"
+                fi
+                ;;
+            4)
+                break
+                ;;
+        esac
+    done
+
+    # 显示配置摘要
+    echo ""
+    echo -e "${yellow}配置摘要:${white}"
+    echo "  防火墙类型: $fw_type"
+    [[ "$enable_ssh" == "y" ]] && echo "  SSH端口: $current_ssh_port ✓"
+    [[ "$enable_http" == "y" ]] && echo "  HTTP端口: 80 ✓"
+    [[ "$enable_https" == "y" ]] && echo "  HTTPS端口: 443 ✓"
+    [[ "$enable_proxy_8080" == "y" ]] && echo "  代理端口: 8080 ✓"
+    [[ "$enable_proxy_8443" == "y" ]] && echo "  代理端口: 8443 ✓"
+    if [[ ${#custom_ports[@]} -gt 0 ]]; then
+        echo "  自定义端口: ${custom_ports[*]}"
+    fi
+    echo ""
+
+    if ! confirm_operation "应用自定义防火墙配置"; then
+        info_msg "操作已取消"
+        return
+    fi
+
+    # 执行自定义配置
+    case $fw_type in
+        ufw)
+            configure_ufw_custom "$current_ssh_port" "$enable_ssh" "$enable_http" "$enable_https" "$enable_proxy_8080" "$enable_proxy_8443" "${custom_ports[@]}"
+            ;;
+        iptables)
+            configure_iptables_custom "$current_ssh_port" "$enable_ssh" "$enable_http" "$enable_https" "$enable_proxy_8080" "$enable_proxy_8443" "${custom_ports[@]}"
+            ;;
+    esac
+
+    success_msg "自定义防火墙配置完成！"
+    echo ""
+    show_firewall_status
+
+    break_end
+}
+
+# 完整的防火墙配置 (保持兼容性)
+configure_firewall() {
+    configure_firewall_quick
 }
 #endregion
 
@@ -6506,7 +7174,7 @@ security_hardening_menu() {
 
         case $choice in
             1) ssh_config_management ;;
-            2) configure_firewall ;;
+            2) firewall_menu ;;
             3) user_permission_management ;;
             4) install_configure_fail2ban ;;
             5) system_optimization ;;
