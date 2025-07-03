@@ -7197,16 +7197,24 @@ detect_os() {
 detect_geographic_location() {
     info_msg "检测地理位置..."
 
-    # 尝试多个服务检测地理位置
-    COUNTRY=$(curl -s --max-time 3 ipinfo.io/country 2>/dev/null)
+    # 尝试多个服务检测地理位置 (增加错误处理)
+    COUNTRY=""
 
-    if [[ -z "$COUNTRY" ]]; then
-        COUNTRY=$(curl -s --max-time 3 cip.cc 2>/dev/null | grep -o "中国" | head -1)
-        if [[ "$COUNTRY" == "中国" ]]; then
+    # 尝试第一个服务
+    if command -v curl >/dev/null 2>&1; then
+        COUNTRY=$(curl -s --max-time 3 ipinfo.io/country 2>/dev/null || echo "")
+    fi
+
+    # 如果第一个失败，尝试第二个服务
+    if [[ -z "$COUNTRY" ]] && command -v curl >/dev/null 2>&1; then
+        local country_check
+        country_check=$(curl -s --max-time 3 cip.cc 2>/dev/null | grep -o "中国" | head -1 || echo "")
+        if [[ "$country_check" == "中国" ]]; then
             COUNTRY="CN"
         fi
     fi
 
+    # 设置默认值和显示结果
     if [[ -z "$COUNTRY" ]]; then
         warn_msg "无法检测地理位置，将使用默认设置"
         COUNTRY="UNKNOWN"
@@ -7223,22 +7231,32 @@ detect_geographic_location() {
 detect_network_addresses() {
     info_msg "检测网络地址..."
 
-    # 检测IPv4地址
-    IPV4_ADDRESS=$(curl -s --max-time 5 -4 ipv4.ip.sb 2>/dev/null)
-    if [[ -z "$IPV4_ADDRESS" ]]; then
-        IPV4_ADDRESS=$(curl -s --max-time 5 -4 ifconfig.me 2>/dev/null)
+    # 检测IPv4地址 (增加错误处理)
+    IPV4_ADDRESS=""
+    if command -v curl >/dev/null 2>&1; then
+        IPV4_ADDRESS=$(curl -s --max-time 5 -4 ipv4.ip.sb 2>/dev/null || echo "")
+        if [[ -z "$IPV4_ADDRESS" ]]; then
+            IPV4_ADDRESS=$(curl -s --max-time 5 -4 ifconfig.me 2>/dev/null || echo "")
+        fi
     fi
 
-    # 检测IPv6地址
-    IPV6_ADDRESS=$(curl -s --max-time 5 -6 ipv6.ip.sb 2>/dev/null)
+    # 检测IPv6地址 (增加错误处理)
+    IPV6_ADDRESS=""
+    if command -v curl >/dev/null 2>&1; then
+        IPV6_ADDRESS=$(curl -s --max-time 5 -6 ipv6.ip.sb 2>/dev/null || echo "")
+    fi
+
+    # 设置默认值
     if [[ -z "$IPV6_ADDRESS" ]]; then
         IPV6_ADDRESS="不支持"
     fi
 
+    # 显示结果
     if [[ -n "$IPV4_ADDRESS" ]]; then
         success_msg "IPv4地址: $IPV4_ADDRESS"
     else
         warn_msg "无法获取IPv4地址"
+        IPV4_ADDRESS="未检测到"
     fi
 
     if [[ "$IPV6_ADDRESS" != "不支持" ]]; then
@@ -7252,21 +7270,41 @@ detect_network_addresses() {
 detect_system_resources() {
     info_msg "检测系统资源..."
 
-    # CPU信息
-    local cpu_cores=$(nproc)
-    local cpu_model=$(lscpu | awk -F': +' '/Model name:/ {print $2; exit}' 2>/dev/null || echo "未知")
+    # CPU信息 (增加错误处理)
+    local cpu_cores
+    cpu_cores=$(nproc 2>/dev/null || echo "未知")
 
-    # 内存信息
-    local mem_total=$(free -h | awk 'NR==2{print $2}')
-    local mem_used=$(free -h | awk 'NR==2{print $3}')
+    local cpu_model
+    if command -v lscpu >/dev/null 2>&1; then
+        cpu_model=$(lscpu 2>/dev/null | awk -F': +' '/Model name:/ {print $2; exit}' || echo "未知")
+    else
+        cpu_model="未知"
+    fi
 
-    # 磁盘信息
-    local disk_info=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')
+    # 内存信息 (增加错误处理)
+    local mem_total mem_used
+    if command -v free >/dev/null 2>&1; then
+        mem_total=$(free -h 2>/dev/null | awk 'NR==2{print $2}' || echo "未知")
+        mem_used=$(free -h 2>/dev/null | awk 'NR==2{print $3}' || echo "未知")
+    else
+        mem_total="未知"
+        mem_used="未知"
+    fi
+
+    # 磁盘信息 (增加错误处理)
+    local disk_info
+    if command -v df >/dev/null 2>&1; then
+        disk_info=$(df -h / 2>/dev/null | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}' || echo "未知")
+    else
+        disk_info="未知"
+    fi
 
     echo -e "${cyan}系统资源信息:${white}"
     echo "  CPU: $cpu_model ($cpu_cores 核心)"
     echo "  内存: $mem_used/$mem_total"
     echo "  磁盘: $disk_info"
+
+    success_msg "系统资源检测完成"
 }
 
 # 完整的系统环境检测
