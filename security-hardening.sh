@@ -15,15 +15,45 @@ set -e -u -o pipefail
 version="2.1.1"
 script_name="security-hardening"
 
-# 颜色定义
-red='\033[31m'
-green='\033[0;32m'
-yellow='\033[33m'
-blue='\033[0;34m'
-pink='\033[38;5;218m'
-cyan='\033[96m'
-white='\033[0m'
-grey='\e[37m'
+# 颜色定义 (终端兼容性优化)
+# 检测终端是否支持颜色
+if [[ -t 1 ]] && command -v tput >/dev/null 2>&1 && tput colors >/dev/null 2>&1; then
+    # 终端支持颜色，使用标准ANSI颜色代码
+    red='\033[31m'
+    green='\033[32m'
+    yellow='\033[33m'
+    blue='\033[34m'
+    pink='\033[35m'      # 洋红色
+    cyan='\033[36m'      # 青色
+    white='\033[0m'      # 重置
+    grey='\033[37m'      # 灰色
+    bold='\033[1m'       # 粗体
+else
+    # 终端不支持颜色或非交互模式，使用空字符串
+    red=''
+    green=''
+    yellow=''
+    blue=''
+    pink=''
+    cyan=''
+    white=''
+    grey=''
+    bold=''
+fi
+
+# 颜色测试函数 (调试用)
+test_colors() {
+    echo "颜色测试："
+    echo -e "${red}红色文本${white}"
+    echo -e "${green}绿色文本${white}"
+    echo -e "${yellow}黄色文本${white}"
+    echo -e "${blue}蓝色文本${white}"
+    echo -e "${pink}粉色文本${white}"
+    echo -e "${cyan}青色文本${white}"
+    echo -e "${grey}灰色文本${white}"
+    echo -e "${bold}粗体文本${white}"
+    echo "颜色测试完成"
+}
 
 # 全局变量
 user_authorization="false"
@@ -496,10 +526,10 @@ configure_ssh_securely() {
     echo -e "${cyan}步骤 4/6: 配置验证${white}"
     verify_ssh_config "$new_ssh_port" "$permit_root_login"
 
-    # --- 步骤 5: 生成SSH密钥 ---
+    # --- 步骤 5: 智能SSH密钥配置 ---
     echo ""
-    echo -e "${cyan}步骤 5/6: SSH密钥配置${white}"
-    setup_ssh_keys
+    echo -e "${cyan}步骤 5/6: 智能SSH密钥配置${white}"
+    smart_ssh_key_setup
 
     # --- 步骤 6: 安全地重启服务 ---
     echo ""
@@ -515,12 +545,20 @@ configure_ssh_securely() {
 
     echo ""
     success_msg "SSH安全配置完成！"
+
+    # 验证最终配置
+    echo ""
+    verify_ssh_security_config
+
     echo ""
     echo -e "${green}重要提醒:${white}"
     echo "• 当前会话不会中断"
     echo "• 新连接请使用端口 $new_ssh_port"
-    echo "• 仅支持密钥认证登录"
-    echo "• 使用 'sudo sshd -T' 可查看完整配置"
+    echo "• 根据密钥检测结果配置了合适的认证方式"
+    echo "• 使用以下命令验证配置:"
+    echo "  sudo sshd -T | grep -i 'PermitRootLogin'"
+    echo "  sudo sshd -T | grep -i 'PasswordAuthentication'"
+    echo "  sudo sshd -T | grep -i 'Port'"
     echo ""
 
     # 保存配置信息
@@ -831,36 +869,532 @@ verify_ssh_config() {
     echo "- 查看日志: sudo journalctl -u sshd -f"
 }
 
-# setup_ssh_keys 函数保持不变，因为它处理的是用户密钥，与sshd服务配置解耦
-setup_ssh_keys() {
-    info_msg "配置SSH密钥认证..."
+# 检测云服务商提供的SSH密钥 (增强版)
+detect_cloud_ssh_keys() {
+    local user_home="${1:-$HOME}"
+    local ssh_dir="$user_home/.ssh"
+    local authorized_keys="$ssh_dir/authorized_keys"
 
-    # 检查是否已存在SSH密钥
-    if [[ -f ~/.ssh/id_rsa ]]; then
-        warn_msg "SSH密钥已存在"
-        read -p "是否重新生成？(y/N): " regenerate
-        if [[ ! "$regenerate" =~ ^[Yy]$ ]]; then
+    # 检查是否存在authorized_keys文件
+    if [[ ! -f "$authorized_keys" ]]; then
+        return 1  # 没有密钥文件
+    fi
+
+    # 检查密钥数量
+    local key_count=$(wc -l < "$authorized_keys" 2>/dev/null || echo "0")
+    if [[ $key_count -eq 0 ]]; then
+        return 1  # 空文件
+    fi
+
+    # 检查密钥来源特征（云服务商通常有特定的注释格式）
+    local cloud_indicators=(
+        "cloud-init"
+        "digitalocean"
+        "vultr"
+        "linode"
+        "aws"
+        "azure"
+        "gcp"
+        "cloudcone"
+        "generated-by-nova"
+        "openstack"
+        "ubuntu"
+        "debian"
+        "centos"
+        "root@"
+    )
+
+    for indicator in "${cloud_indicators[@]}"; do
+        if grep -qi "$indicator" "$authorized_keys" 2>/dev/null; then
+            return 0  # 检测到云服务商密钥
+        fi
+    done
+
+    # 如果有密钥但没有明确的云服务商标识，也认为可能是云服务商提供的
+    # 这是保守策略，避免意外锁定用户
+    if [[ $key_count -gt 0 ]]; then
+        return 0  # 有密钥存在，保守处理
+    fi
+
+    return 1  # 没有检测到
+}
+
+# 检测当前SSH配置状态
+detect_ssh_security_status() {
+    local status_info=()
+
+    # 检查Root登录方式
+    local permit_root=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "unknown")
+    case "$permit_root" in
+        "prohibit-password"|"without-password")
+            status_info+=("root_login:secure")
+            ;;
+        "no")
+            status_info+=("root_login:disabled")
+            ;;
+        "yes")
+            status_info+=("root_login:insecure")
+            ;;
+        *)
+            status_info+=("root_login:unknown")
+            ;;
+    esac
+
+    # 检查密码认证
+    local password_auth=$(sshd -T 2>/dev/null | grep -i '^passwordauthentication ' | awk '{print $2}' || echo "unknown")
+    case "$password_auth" in
+        "no")
+            status_info+=("password_auth:disabled")
+            ;;
+        "yes")
+            status_info+=("password_auth:enabled")
+            ;;
+        *)
+            status_info+=("password_auth:unknown")
+            ;;
+    esac
+
+    # 检查SSH端口
+    local ssh_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "22")
+    if [[ "$ssh_port" == "22" ]]; then
+        status_info+=("ssh_port:default")
+    else
+        status_info+=("ssh_port:custom")
+    fi
+
+    # 检查SSH密钥
+    if detect_cloud_ssh_keys "/root"; then
+        status_info+=("ssh_keys:present")
+    else
+        status_info+=("ssh_keys:missing")
+    fi
+
+    # 返回状态信息
+    printf '%s\n' "${status_info[@]}"
+}
+
+# 智能SSH安全配置 (根据现有配置智能决策)
+smart_ssh_key_setup() {
+    info_msg "智能SSH安全配置..."
+    echo "参考: https://linux.do/t/topic/267502"
+    echo "检测现有配置，避免覆盖云服务商密钥，防止用户锁定"
+    echo ""
+
+    # 获取当前SSH安全状态
+    local ssh_status=($(detect_ssh_security_status))
+    local has_keys=false
+    local root_login_secure=false
+    local password_auth_disabled=false
+
+    # 解析状态信息
+    for status in "${ssh_status[@]}"; do
+        case "$status" in
+            "ssh_keys:present") has_keys=true ;;
+            "root_login:secure"|"root_login:disabled") root_login_secure=true ;;
+            "password_auth:disabled") password_auth_disabled=true ;;
+        esac
+    done
+
+    # 显示当前配置状态
+    echo -e "${cyan}当前SSH安全状态检测:${white}"
+
+    # SSH密钥状态
+    if [[ "$has_keys" == true ]]; then
+        echo "  ✓ SSH密钥: 已配置"
+        local key_count=$(wc -l < "/root/.ssh/authorized_keys" 2>/dev/null || echo "0")
+        echo "    密钥数量: $key_count"
+
+        # 显示密钥详情
+        if [[ -f "/root/.ssh/authorized_keys" ]]; then
+            echo "    密钥来源分析:"
+            while IFS= read -r line; do
+                if [[ -n "$line" && ! "$line" =~ ^[[:space:]]*# ]]; then
+                    local key_comment=$(echo "$line" | awk '{for(i=3;i<=NF;i++) printf "%s ", $i; print ""}' | sed 's/[[:space:]]*$//')
+                    if [[ -n "$key_comment" ]]; then
+                        echo "      - $key_comment"
+                    else
+                        echo "      - (无注释)"
+                    fi
+                fi
+            done < "/root/.ssh/authorized_keys"
+        fi
+    else
+        echo "  ⚠ SSH密钥: 未配置"
+    fi
+
+    # Root登录状态
+    local current_permit_root=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "unknown")
+    if [[ "$root_login_secure" == true ]]; then
+        echo "  ✓ Root登录: 安全 ($current_permit_root)"
+    else
+        echo "  ⚠ Root登录: 需要优化 ($current_permit_root)"
+    fi
+
+    # 密码认证状态
+    local current_password_auth=$(sshd -T 2>/dev/null | grep -i '^passwordauthentication ' | awk '{print $2}' || echo "unknown")
+    if [[ "$password_auth_disabled" == true ]]; then
+        echo "  ✓ 密码认证: 已禁用"
+    else
+        echo "  ⚠ 密码认证: 已启用 ($current_password_auth)"
+    fi
+
+    # SSH端口状态
+    local current_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "22")
+    echo "  ℹ SSH端口: $current_port"
+
+    echo ""
+
+    # 根据检测结果提供智能建议
+    if [[ "$has_keys" == true ]]; then
+        echo -e "${green}✓ 检测到云服务商SSH密钥配置${white}"
+        echo "为保护您的访问安全，建议采用以下策略："
+        echo ""
+        echo "推荐配置："
+        echo "1. 保留现有SSH密钥 (避免锁定风险)"
+        echo "2. 设置 PermitRootLogin prohibit-password"
+        echo "3. 可选择是否禁用密码认证"
+        echo ""
+
+        if [[ "$root_login_secure" == true && "$password_auth_disabled" == true ]]; then
+            success_msg "当前SSH配置已经很安全，无需修改"
+            echo "跳过密钥重新生成，保持现有安全配置"
+            return
+        fi
+
+        echo "配置选项："
+        echo "1. 保持现有密钥，仅优化安全设置 (推荐)"
+        echo "2. 添加额外的SSH密钥"
+        echo "3. 跳过所有修改，保持现状"
+        echo ""
+
+        local choice
+        prompt_for_input "请选择 [1-3]: " choice validate_numeric_range 1 3
+
+        case $choice in
+            1)
+                info_msg "保留现有密钥，优化安全设置"
+                optimize_ssh_security_settings
+                ;;
+            2)
+                info_msg "添加额外SSH密钥"
+                generate_additional_ssh_key
+                ;;
+            3)
+                info_msg "保持现状，跳过修改"
+                success_msg "SSH配置保持不变"
+                ;;
+        esac
+    else
+        warn_msg "未检测到SSH密钥，需要配置密钥认证"
+        echo ""
+        echo "安全建议："
+        echo "1. 生成SSH密钥对"
+        echo "2. 配置密钥认证"
+        echo "3. 设置安全的登录方式"
+        echo ""
+
+        if confirm_operation "生成新的SSH密钥"; then
+            setup_ssh_keys_new
+        else
+            warn_msg "跳过SSH密钥生成，请手动配置密钥认证"
+        fi
+    fi
+}
+
+# 优化SSH安全设置 (不修改密钥)
+optimize_ssh_security_settings() {
+    info_msg "优化SSH安全设置..."
+    echo "保留现有密钥，仅调整安全配置"
+    echo ""
+
+    local config_file="/etc/ssh/sshd_config.d/99-security-hardening.conf"
+    local needs_restart=false
+
+    # 确保配置目录存在
+    mkdir -p "$(dirname "$config_file")"
+
+    # 检查并设置PermitRootLogin
+    local current_permit_root=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "unknown")
+    if [[ "$current_permit_root" != "prohibit-password" && "$current_permit_root" != "without-password" ]]; then
+        echo -e "${cyan}设置Root登录方式:${white}"
+        echo "当前: PermitRootLogin $current_permit_root"
+        echo "建议: PermitRootLogin prohibit-password (仅密钥登录)"
+        echo ""
+
+        if confirm_operation "设置Root仅允许密钥登录"; then
+            # 更新或创建配置
+            if [[ -f "$config_file" ]]; then
+                if grep -q "^PermitRootLogin" "$config_file"; then
+                    sed -i 's/^PermitRootLogin.*/PermitRootLogin prohibit-password/' "$config_file"
+                else
+                    echo "PermitRootLogin prohibit-password" >> "$config_file"
+                fi
+            else
+                echo "# SSH安全配置 - 由安全加固工具生成" > "$config_file"
+                echo "# 生成时间: $(date)" >> "$config_file"
+                echo "PermitRootLogin prohibit-password" >> "$config_file"
+            fi
+            needs_restart=true
+            success_msg "Root登录方式已设置为仅密钥认证"
+        fi
+    else
+        success_msg "Root登录方式已经安全: $current_permit_root"
+    fi
+
+    # 检查密码认证设置
+    local current_password_auth=$(sshd -T 2>/dev/null | grep -i '^passwordauthentication ' | awk '{print $2}' || echo "unknown")
+    if [[ "$current_password_auth" == "yes" ]]; then
+        echo ""
+        echo -e "${cyan}密码认证设置:${white}"
+        echo "当前: PasswordAuthentication yes"
+        echo "检测到云服务商可能在其配置文件中启用了密码认证"
+        echo ""
+        echo "选项："
+        echo "1. 保持密码认证启用 (兼容性好)"
+        echo "2. 禁用密码认证 (更安全，仅密钥登录)"
+        echo ""
+
+        local auth_choice
+        prompt_for_input "请选择 [1-2]: " auth_choice validate_numeric_range 1 2
+
+        if [[ "$auth_choice" == "2" ]]; then
+            if confirm_operation "禁用密码认证 (仅允许密钥登录)"; then
+                echo "PasswordAuthentication no" >> "$config_file"
+                needs_restart=true
+                success_msg "密码认证已禁用"
+                echo ""
+                warn_msg "重要提示: 密码认证已禁用，请确保SSH密钥可以正常使用"
+            fi
+        else
+            info_msg "保持密码认证启用"
+        fi
+    else
+        success_msg "密码认证已经禁用"
+    fi
+
+    # 重启SSH服务
+    if [[ "$needs_restart" == true ]]; then
+        echo ""
+        echo -e "${cyan}应用配置更改:${white}"
+
+        # 验证配置语法
+        if sshd -t 2>/dev/null; then
+            success_msg "SSH配置语法正确"
+
+            if confirm_operation "重启SSH服务以应用配置"; then
+                if systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null; then
+                    success_msg "SSH服务已重启，配置已生效"
+                else
+                    warn_msg "SSH服务重启失败，请手动重启"
+                fi
+            else
+                info_msg "配置已保存，请手动重启SSH服务: systemctl restart sshd"
+            fi
+        else
+            error_exit "SSH配置语法错误，请检查配置文件"
+        fi
+    else
+        success_msg "SSH安全配置已经是最优状态"
+    fi
+}
+
+# 生成额外的SSH密钥（添加到现有配置）
+generate_additional_ssh_key() {
+    info_msg "生成额外的SSH密钥..."
+
+    local ssh_dir="$HOME/.ssh"
+    local authorized_keys="$ssh_dir/authorized_keys"
+
+    # 确保目录存在
+    mkdir -p "$ssh_dir"
+    chmod 700 "$ssh_dir"
+
+    # 生成新的密钥对（使用不同的文件名）
+    local key_name="id_rsa_security_hardening"
+    local private_key="$ssh_dir/$key_name"
+    local public_key="$ssh_dir/${key_name}.pub"
+
+    if [[ -f "$private_key" ]]; then
+        warn_msg "安全加固密钥已存在: $private_key"
+        if ! confirm_operation "是否重新生成"; then
             return
         fi
     fi
 
+    echo "生成新的SSH密钥对..."
+    ssh-keygen -t rsa -b 4096 -f "$private_key" -q -N "" -C "security-hardening-$(date +%Y%m%d)"
+
+    # 添加公钥到authorized_keys
+    echo "" >> "$authorized_keys"  # 添加空行分隔
+    echo "# Security Hardening Tool Generated Key - $(date)" >> "$authorized_keys"
+    cat "$public_key" >> "$authorized_keys"
+
+    # 设置权限
+    chmod 600 "$authorized_keys"
+    chmod 600 "$private_key"
+    chmod 644 "$public_key"
+
+    success_msg "新SSH密钥已添加到现有配置"
+    echo ""
+    echo -e "${yellow}新生成的密钥文件:${white}"
+    echo "  私钥: $private_key"
+    echo "  公钥: $public_key"
+    echo ""
+    echo -e "${cyan}密钥已添加到: $authorized_keys${white}"
+}
+
+# 强制重新生成SSH密钥
+setup_ssh_keys_force() {
+    warn_msg "强制重新生成SSH密钥 (覆盖现有配置)"
+
+    local ssh_dir="$HOME/.ssh"
+    local authorized_keys="$ssh_dir/authorized_keys"
+
+    # 备份现有配置
+    if [[ -f "$authorized_keys" ]]; then
+        local backup_file="${authorized_keys}.backup.$(date +%Y%m%d_%H%M%S)"
+        cp "$authorized_keys" "$backup_file"
+        success_msg "现有密钥已备份到: $backup_file"
+    fi
+
+    # 调用原有的密钥生成函数
+    setup_ssh_keys_new
+}
+
+# 生成新的SSH密钥
+setup_ssh_keys_new() {
+    info_msg "生成新的SSH密钥..."
+
+    local ssh_dir="$HOME/.ssh"
+    local authorized_keys="$ssh_dir/authorized_keys"
+
     # 创建SSH目录
-    mkdir -p ~/.ssh
-    chmod 700 ~/.ssh
+    mkdir -p "$ssh_dir"
+    chmod 700 "$ssh_dir"
 
     # 生成SSH密钥对
-    ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -q -N ""
+    echo "正在生成4096位RSA密钥对..."
+    ssh-keygen -t rsa -b 4096 -f "$ssh_dir/id_rsa" -q -N "" -C "security-hardening-$(date +%Y%m%d)"
 
     # 设置authorized_keys
-    cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
-    chmod 600 ~/.ssh/authorized_keys
-    chmod 600 ~/.ssh/id_rsa
-    chmod 644 ~/.ssh/id_rsa.pub
+    cat "$ssh_dir/id_rsa.pub" > "$authorized_keys"  # 使用 > 覆盖而不是 >> 追加
+    chmod 600 "$authorized_keys"
+    chmod 600 "$ssh_dir/id_rsa"
+    chmod 644 "$ssh_dir/id_rsa.pub"
 
     success_msg "SSH密钥已生成并配置"
 
-    echo -e "${yellow}重要：SSH私钥已保存至 ~/.ssh/id_rsa 文件中。${white}"
+    echo ""
+    echo -e "${yellow}重要提示:${white}"
+    echo -e "${red}SSH私钥已保存至: $ssh_dir/id_rsa${white}"
     echo -e "${red}此文件包含敏感信息，请妥善保管，不要泄露。${white}"
+    echo ""
+    echo -e "${cyan}建议操作:${white}"
+    echo "1. 下载私钥文件到本地安全位置"
+    echo "2. 使用私钥文件进行SSH连接"
+    echo "3. 删除服务器上的私钥文件（可选）"
+}
+
+# 验证SSH安全配置
+verify_ssh_security_config() {
+    info_msg "验证SSH安全配置..."
+    echo ""
+
+    echo -e "${cyan}SSH配置验证结果:${white}"
+
+    # 验证PermitRootLogin
+    local permit_root=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "unknown")
+    echo -n "  Root登录方式: "
+    case "$permit_root" in
+        "prohibit-password"|"without-password")
+            echo -e "${green}✓ $permit_root (安全)${white}"
+            ;;
+        "no")
+            echo -e "${green}✓ $permit_root (已禁用)${white}"
+            ;;
+        "yes")
+            echo -e "${red}⚠ $permit_root (不安全)${white}"
+            ;;
+        *)
+            echo -e "${yellow}? $permit_root (未知)${white}"
+            ;;
+    esac
+
+    # 验证PasswordAuthentication
+    local password_auth=$(sshd -T 2>/dev/null | grep -i '^passwordauthentication ' | awk '{print $2}' || echo "unknown")
+    echo -n "  密码认证: "
+    case "$password_auth" in
+        "no")
+            echo -e "${green}✓ 已禁用 (安全)${white}"
+            ;;
+        "yes")
+            echo -e "${yellow}⚠ 已启用 (兼容性)${white}"
+            ;;
+        *)
+            echo -e "${yellow}? $password_auth (未知)${white}"
+            ;;
+    esac
+
+    # 验证SSH端口
+    local ssh_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "22")
+    echo -n "  SSH端口: "
+    if [[ "$ssh_port" == "22" ]]; then
+        echo -e "${yellow}$ssh_port (默认端口)${white}"
+    else
+        echo -e "${green}$ssh_port (自定义端口)${white}"
+    fi
+
+    # 验证SSH密钥
+    echo -n "  SSH密钥: "
+    if [[ -f "/root/.ssh/authorized_keys" ]]; then
+        local key_count=$(wc -l < "/root/.ssh/authorized_keys" 2>/dev/null || echo "0")
+        if [[ $key_count -gt 0 ]]; then
+            echo -e "${green}✓ 已配置 ($key_count 个密钥)${white}"
+        else
+            echo -e "${red}⚠ 文件存在但无有效密钥${white}"
+        fi
+    else
+        echo -e "${red}⚠ 未配置${white}"
+    fi
+
+    echo ""
+
+    # 显示有效配置来源
+    echo -e "${cyan}配置文件来源分析:${white}"
+
+    # 检查主配置文件
+    if [[ -f "/etc/ssh/sshd_config" ]]; then
+        echo "  主配置: /etc/ssh/sshd_config"
+    fi
+
+    # 检查配置目录中的文件
+    if [[ -d "/etc/ssh/sshd_config.d" ]]; then
+        local config_files=($(ls /etc/ssh/sshd_config.d/*.conf 2>/dev/null))
+        if [[ ${#config_files[@]} -gt 0 ]]; then
+            echo "  配置目录: /etc/ssh/sshd_config.d/"
+            for config_file in "${config_files[@]}"; do
+                local filename=$(basename "$config_file")
+                echo "    - $filename"
+
+                # 显示关键配置项
+                if grep -q "PermitRootLogin\|PasswordAuthentication" "$config_file" 2>/dev/null; then
+                    while IFS= read -r line; do
+                        if [[ "$line" =~ ^[[:space:]]*(PermitRootLogin|PasswordAuthentication) ]]; then
+                            echo "      $line"
+                        fi
+                    done < "$config_file"
+                fi
+            done
+        fi
+    fi
+
+    echo ""
+    success_msg "SSH配置验证完成"
+}
+
+# setup_ssh_keys 函数保持兼容性
+setup_ssh_keys() {
+    smart_ssh_key_setup
 }
 
 # 创建自定义SSH配置文件
@@ -1113,8 +1647,8 @@ configure_ssh_security_settings() {
     show_progress 3 5 "验证配置"
     verify_ssh_config
 
-    show_progress 4 5 "生成SSH密钥"
-    generate_ssh_keys
+    show_progress 4 5 "SSH密钥配置"
+    smart_ssh_key_setup
 
     show_progress 5 5 "配置完成"
 
@@ -1612,36 +2146,126 @@ change_ssh_port_only() {
     break_end
 }
 
-# 仅配置Root登录方式
+# 仅配置Root登录方式 (智能检测版)
 configure_root_login_only() {
     clear
     echo -e "${pink}配置Root登录方式${white}"
     echo "================================"
 
+    # 获取当前配置
     local current_root=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "未知")
-    echo "当前Root登录配置: $current_root"
+    local current_password_auth=$(sshd -T 2>/dev/null | grep -i '^passwordauthentication ' | awk '{print $2}' || echo "未知")
+    local current_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "22")
+
+    echo -e "${cyan}当前SSH配置:${white}"
+    echo "  Root登录方式: $current_root"
+    echo "  密码认证: $current_password_auth"
+    echo "  SSH端口: $current_port"
+    echo ""
+
+    # 检测SSH密钥配置
+    echo -e "${cyan}SSH密钥检测:${white}"
+    local has_root_keys=false
+    if detect_cloud_ssh_keys "/root"; then
+        has_root_keys=true
+        local key_count=$(wc -l < "/root/.ssh/authorized_keys" 2>/dev/null || echo "0")
+        echo "  ✓ 检测到Root用户SSH密钥 ($key_count 个)"
+
+        # 显示密钥信息
+        if [[ -f "/root/.ssh/authorized_keys" ]]; then
+            echo "  密钥详情:"
+            while IFS= read -r line; do
+                if [[ -n "$line" && ! "$line" =~ ^[[:space:]]*# ]]; then
+                    local key_type=$(echo "$line" | awk '{print $1}')
+                    local key_comment=$(echo "$line" | awk '{for(i=3;i<=NF;i++) printf "%s ", $i; print ""}' | sed 's/[[:space:]]*$//')
+                    echo "    - $key_type"
+                    [[ -n "$key_comment" ]] && echo "      注释: $key_comment"
+                fi
+            done < "/root/.ssh/authorized_keys"
+        fi
+    else
+        echo "  ⚠ 未检测到Root用户SSH密钥"
+        warn_msg "没有SSH密钥时禁用密码认证可能导致无法登录"
+    fi
+    echo ""
+
+    # 根据密钥情况提供建议
+    if [[ "$has_root_keys" == true ]]; then
+        echo -e "${green}建议配置:${white}"
+        echo "检测到SSH密钥，推荐使用 prohibit-password (仅密钥登录)"
+    else
+        echo -e "${yellow}安全提示:${white}"
+        echo "未检测到SSH密钥，建议先配置密钥再禁用密码登录"
+    fi
     echo ""
 
     echo "Root登录方式选择:"
-    echo "1. prohibit-password - 仅允许密钥登录 (推荐)"
+    if [[ "$has_root_keys" == true ]]; then
+        echo "1. prohibit-password - 仅允许密钥登录 (推荐，已有密钥)"
+    else
+        echo "1. prohibit-password - 仅允许密钥登录 (需要先配置密钥)"
+    fi
     echo "2. no - 完全禁止Root登录"
     echo "3. yes - 允许密码登录 (不推荐)"
+    if [[ "$has_root_keys" == false ]]; then
+        echo "4. 先配置SSH密钥，再设置登录方式"
+    fi
     echo ""
 
+    local max_choice=3
+    [[ "$has_root_keys" == false ]] && max_choice=4
+
     local choice
-    prompt_for_input "请选择 [1-3]: " choice validate_numeric_range 1 3
+    prompt_for_input "请选择 [1-$max_choice]: " choice validate_numeric_range 1 $max_choice
 
     local new_root_login
     case $choice in
-        1) new_root_login="prohibit-password" ;;
-        2) new_root_login="no" ;;
+        1)
+            if [[ "$has_root_keys" == false ]]; then
+                warn_msg "警告：没有SSH密钥时设置 prohibit-password 可能导致无法登录"
+                echo ""
+                echo "建议操作："
+                echo "1. 确保当前会话保持连接"
+                echo "2. 在另一个终端测试SSH密钥登录"
+                echo "3. 确认可以正常登录后再应用此配置"
+                echo ""
+                if ! confirm_operation "确认设置为仅密钥登录"; then
+                    info_msg "操作已取消"
+                    return
+                fi
+            fi
+            new_root_login="prohibit-password"
+            ;;
+        2)
+            warn_msg "完全禁止Root登录后，需要使用其他用户登录"
+            if ! confirm_operation "确认完全禁止Root登录"; then
+                info_msg "操作已取消"
+                return
+            fi
+            new_root_login="no"
+            ;;
         3)
-            warn_msg "允许Root密码登录存在安全风险"
+            warn_msg "允许Root密码登录存在严重安全风险"
+            echo "风险包括："
+            echo "- 暴力破解攻击"
+            echo "- 弱密码漏洞"
+            echo "- 网络嗅探风险"
+            echo ""
             if ! confirm_operation "确认允许Root密码登录"; then
                 info_msg "操作已取消"
                 return
             fi
             new_root_login="yes"
+            ;;
+        4)
+            if [[ "$has_root_keys" == false ]]; then
+                info_msg "启动SSH密钥配置..."
+                smart_ssh_key_setup
+                echo ""
+                info_msg "密钥配置完成，请重新运行此功能设置Root登录方式"
+                break_end
+                return
+            fi
             ;;
     esac
 
@@ -7157,7 +7781,7 @@ security_hardening_menu() {
         echo ""
 
         echo "请选择操作："
-        echo "1. ${pink}SSH配置管理 (推荐)${white}"
+        echo -e "1. ${pink}SSH配置管理${white} ${yellow}(推荐)${white}"
         echo "2. 防火墙设置"
         echo "3. 用户权限管理"
         echo "4. fail2ban安装配置"
