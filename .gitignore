@@ -371,6 +371,11 @@ regulatory_*
 .*
 !.gitignore
 !.github/
+
+# 开发和调试文件
 memory-bank/
-.claude
+.claude/
+
+# 文档文件（保留README.md）
 *.md
+!README.md

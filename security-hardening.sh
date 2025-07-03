@@ -820,18 +820,42 @@ verify_ssh_config() {
         echo -e "${green}✓ SSH端口: $effective_port${white}"
     fi
 
-    # Root登录验证
-    if [[ "$effective_root_login" != "$expected_root_login" ]]; then
-        if [[ "$effective_root_login" == "no" && "$expected_root_login" == "prohibit-password" ]]; then
-            echo -e "${yellow}⚠ Root登录: $effective_root_login (比预期更严格)${white}"
-            ((warnings++))
-        else
+    # Root登录验证 (增强版 - 处理语法兼容性)
+    case "$effective_root_login" in
+        "prohibit-password")
+            if [[ "$expected_root_login" == "prohibit-password" ]]; then
+                echo -e "${green}✓ Root登录: $effective_root_login (新语法)${white}"
+            else
+                echo -e "${green}✓ Root登录: $effective_root_login (比预期更安全)${white}"
+                ((warnings++))
+            fi
+            ;;
+        "without-password")
+            if [[ "$expected_root_login" == "prohibit-password" ]]; then
+                echo -e "${yellow}⚠ Root登录: $effective_root_login (旧语法，功能等效)${white}"
+                echo -e "  ${cyan}建议: 更新为新语法 'prohibit-password'${white}"
+                ((warnings++))
+            else
+                echo -e "${green}✓ Root登录: $effective_root_login${white}"
+            fi
+            ;;
+        "no")
+            if [[ "$expected_root_login" == "prohibit-password" ]]; then
+                echo -e "${yellow}⚠ Root登录: $effective_root_login (比预期更严格)${white}"
+                ((warnings++))
+            else
+                echo -e "${green}✓ Root登录: $effective_root_login${white}"
+            fi
+            ;;
+        "yes")
+            echo -e "${red}✗ Root登录配置不安全: $effective_root_login (允许密码登录)${white}"
+            validation_passed=false
+            ;;
+        *)
             echo -e "${red}✗ Root登录配置异常: 期望 $expected_root_login, 实际 $effective_root_login${white}"
             validation_passed=false
-        fi
-    else
-        echo -e "${green}✓ Root登录: $effective_root_login${white}"
-    fi
+            ;;
+    esac
 
     # 密码认证验证
     if [[ "$effective_password_auth" != "no" ]]; then
@@ -1101,6 +1125,73 @@ smart_ssh_key_setup() {
     fi
 }
 
+# 强制更新PermitRootLogin配置 (覆盖云服务商设置)
+force_update_permit_root_login() {
+    local target_value="${1:-prohibit-password}"
+    local config_file="/etc/ssh/sshd_config.d/99-security-hardening.conf"
+
+    info_msg "强制更新PermitRootLogin配置..."
+    echo "目标设置: PermitRootLogin $target_value"
+    echo ""
+
+    # 确保配置目录存在
+    mkdir -p "$(dirname "$config_file")"
+
+    # 检查当前生效配置
+    local current_permit_root=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "unknown")
+    echo "当前生效配置: PermitRootLogin $current_permit_root"
+
+    # 检查云服务商配置文件
+    echo ""
+    echo -e "${cyan}检查可能的配置冲突:${white}"
+    local cloud_configs=(
+        "/etc/ssh/sshd_config.d/50-cloud-init.conf"
+        "/etc/ssh/sshd_config.d/60-cloudimg-settings.conf"
+        "/etc/ssh/sshd_config.d/99-cloudimg-settings.conf"
+        "/etc/ssh/sshd_config.d/50-cloudimg-settings.conf"
+    )
+
+    local found_conflicts=false
+    for cloud_config in "${cloud_configs[@]}"; do
+        if [[ -f "$cloud_config" ]] && grep -q "PermitRootLogin" "$cloud_config" 2>/dev/null; then
+            found_conflicts=true
+            local cloud_value=$(grep "PermitRootLogin" "$cloud_config" | tail -1 | awk '{print $2}')
+            echo "  发现冲突: $cloud_config 设置为 $cloud_value"
+        fi
+    done
+
+    if [[ "$found_conflicts" == false ]]; then
+        echo "  未发现配置冲突"
+    fi
+    echo ""
+
+    # 创建或更新我们的配置文件，使用更高的优先级
+    local our_config_file="/etc/ssh/sshd_config.d/99-security-hardening.conf"
+
+    echo -e "${cyan}更新安全配置文件:${white}"
+    echo "配置文件: $our_config_file"
+
+    # 创建配置内容
+    cat > "$our_config_file" << EOF
+# SSH安全配置 - 由安全加固工具生成
+# 生成时间: $(date)
+# 参考: https://linux.do/t/topic/267502
+#
+# 此文件使用99-前缀确保优先级高于云服务商配置
+# 覆盖可能的云服务商设置 (如50-cloud-init.conf)
+
+# Root登录配置 - 强制覆盖
+PermitRootLogin $target_value
+
+# 确保配置生效的额外设置
+# 如果云服务商使用了without-password，我们明确设置为prohibit-password
+EOF
+
+    success_msg "配置文件已更新"
+
+    return 0
+}
+
 # 优化SSH安全设置 (不修改密钥)
 optimize_ssh_security_settings() {
     info_msg "优化SSH安全设置..."
@@ -1110,35 +1201,41 @@ optimize_ssh_security_settings() {
     local config_file="/etc/ssh/sshd_config.d/99-security-hardening.conf"
     local needs_restart=false
 
-    # 确保配置目录存在
-    mkdir -p "$(dirname "$config_file")"
-
-    # 检查并设置PermitRootLogin
+    # 检查当前PermitRootLogin设置
     local current_permit_root=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "unknown")
-    if [[ "$current_permit_root" != "prohibit-password" && "$current_permit_root" != "without-password" ]]; then
+
+    echo -e "${cyan}当前Root登录配置分析:${white}"
+    echo "生效配置: PermitRootLogin $current_permit_root"
+
+    # 检查是否需要强制更新
+    if [[ "$current_permit_root" == "without-password" ]]; then
+        warn_msg "检测到旧语法 'without-password'，建议更新为 'prohibit-password'"
+        echo ""
+        echo "说明："
+        echo "• without-password: 旧语法 (已弃用但仍有效)"
+        echo "• prohibit-password: 新语法 (推荐使用)"
+        echo "• 两者功能相同，但建议使用新语法"
+        echo ""
+
+        if confirm_operation "更新为新语法 prohibit-password"; then
+            force_update_permit_root_login "prohibit-password"
+            needs_restart=true
+        else
+            info_msg "保持当前配置 (without-password 功能等效)"
+        fi
+    elif [[ "$current_permit_root" != "prohibit-password" ]]; then
+        echo ""
         echo -e "${cyan}设置Root登录方式:${white}"
         echo "当前: PermitRootLogin $current_permit_root"
         echo "建议: PermitRootLogin prohibit-password (仅密钥登录)"
         echo ""
 
         if confirm_operation "设置Root仅允许密钥登录"; then
-            # 更新或创建配置
-            if [[ -f "$config_file" ]]; then
-                if grep -q "^PermitRootLogin" "$config_file"; then
-                    sed -i 's/^PermitRootLogin.*/PermitRootLogin prohibit-password/' "$config_file"
-                else
-                    echo "PermitRootLogin prohibit-password" >> "$config_file"
-                fi
-            else
-                echo "# SSH安全配置 - 由安全加固工具生成" > "$config_file"
-                echo "# 生成时间: $(date)" >> "$config_file"
-                echo "PermitRootLogin prohibit-password" >> "$config_file"
-            fi
+            force_update_permit_root_login "prohibit-password"
             needs_restart=true
-            success_msg "Root登录方式已设置为仅密钥认证"
         fi
     else
-        success_msg "Root登录方式已经安全: $current_permit_root"
+        success_msg "Root登录方式已经是最新推荐配置: $current_permit_root"
     fi
 
     # 检查密码认证设置
@@ -1392,6 +1489,335 @@ verify_ssh_security_config() {
     success_msg "SSH配置验证完成"
 }
 
+# 修复PermitRootLogin配置 (专门处理without-password问题)
+fix_permit_root_login_syntax() {
+    clear
+    echo -e "${pink}修复PermitRootLogin配置${white}"
+    echo "================================"
+    echo "参考: https://linux.do/t/topic/267502"
+    echo ""
+
+    # 检查当前配置
+    local current_permit_root=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "unknown")
+
+    echo -e "${cyan}当前配置检测:${white}"
+    echo "PermitRootLogin: $current_permit_root"
+    echo ""
+
+    if [[ "$current_permit_root" == "without-password" ]]; then
+        warn_msg "检测到旧语法 'without-password'"
+        echo ""
+        echo -e "${yellow}语法说明:${white}"
+        echo "• without-password: 旧语法 (OpenSSH 7.0前使用，已弃用)"
+        echo "• prohibit-password: 新语法 (OpenSSH 7.0+推荐)"
+        echo "• 功能完全相同: 都是仅允许密钥登录，禁止密码登录"
+        echo ""
+
+        echo -e "${cyan}可能的原因:${white}"
+        echo "• 云服务商使用了旧版本的配置模板"
+        echo "• 系统从旧版本升级但配置未更新"
+        echo "• 配置文件优先级导致旧配置生效"
+        echo ""
+
+        if confirm_operation "更新为新语法 prohibit-password"; then
+            force_update_permit_root_login "prohibit-password"
+
+            # 重启SSH服务
+            echo ""
+            if confirm_operation "重启SSH服务以应用新配置"; then
+                if systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null; then
+                    success_msg "SSH服务已重启"
+
+                    # 验证更新结果
+                    echo ""
+                    echo -e "${cyan}验证更新结果:${white}"
+                    local new_permit_root=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "unknown")
+                    echo "更新后配置: PermitRootLogin $new_permit_root"
+
+                    if [[ "$new_permit_root" == "prohibit-password" ]]; then
+                        success_msg "✓ 配置已成功更新为新语法"
+                    elif [[ "$new_permit_root" == "without-password" ]]; then
+                        warn_msg "⚠ 仍显示旧语法，可能存在配置冲突"
+                        echo ""
+                        echo "可能的解决方案："
+                        echo "1. 检查是否有其他配置文件覆盖了设置"
+                        echo "2. 手动编辑云服务商配置文件"
+                        echo "3. 使用更高优先级的配置文件名"
+                    else
+                        echo "当前配置: $new_permit_root"
+                    fi
+                else
+                    warn_msg "SSH服务重启失败，请手动重启"
+                fi
+            else
+                info_msg "配置已保存，请手动重启SSH服务"
+            fi
+        else
+            info_msg "保持当前配置 (without-password 功能等效)"
+        fi
+    elif [[ "$current_permit_root" == "prohibit-password" ]]; then
+        success_msg "✓ 当前已使用新语法 prohibit-password"
+        echo "无需修复"
+    else
+        warn_msg "当前配置: $current_permit_root"
+        echo "这不是密钥登录配置，建议设置为 prohibit-password"
+        echo ""
+
+        if confirm_operation "设置为 prohibit-password (仅密钥登录)"; then
+            force_update_permit_root_login "prohibit-password"
+
+            if confirm_operation "重启SSH服务"; then
+                systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null
+                success_msg "配置已更新并重启服务"
+            fi
+        fi
+    fi
+
+    echo ""
+    echo -e "${cyan}验证命令:${white}"
+    echo "使用以下命令验证配置:"
+    echo "  sudo sshd -T | grep -i 'PermitRootLogin'"
+    echo "  sudo sshd -T | grep -i 'PasswordAuthentication'"
+    echo ""
+
+    break_end
+}
+
+# SSH配置深度诊断 (新增)
+ssh_config_diagnosis() {
+    clear
+    echo -e "${pink}SSH配置深度诊断${white}"
+    echo "================================"
+    echo "参考: https://linux.do/t/topic/267502"
+    echo ""
+
+    # 1. 服务状态检查
+    echo -e "${cyan}1. SSH服务状态${white}"
+    if systemctl is-active sshd >/dev/null 2>&1; then
+        echo -e "${green}✓ sshd 服务运行中${white}"
+    elif systemctl is-active ssh >/dev/null 2>&1; then
+        echo -e "${green}✓ ssh 服务运行中${white}"
+    else
+        echo -e "${red}✗ SSH服务未运行${white}"
+    fi
+
+    if systemctl is-enabled sshd >/dev/null 2>&1; then
+        echo -e "${green}✓ sshd 服务已启用开机自启${white}"
+    elif systemctl is-enabled ssh >/dev/null 2>&1; then
+        echo -e "${green}✓ ssh 服务已启用开机自启${white}"
+    else
+        echo -e "${yellow}⚠ SSH服务未设置开机自启${white}"
+    fi
+    echo ""
+
+    # 2. 配置文件语法检查
+    echo -e "${cyan}2. 配置文件语法检查${white}"
+    if sshd -t 2>/dev/null; then
+        echo -e "${green}✓ SSH配置文件语法正确${white}"
+    else
+        echo -e "${red}✗ SSH配置文件语法错误${white}"
+        echo "错误详情:"
+        sshd -t 2>&1 | sed 's/^/  /'
+    fi
+    echo ""
+
+    # 3. 当前生效配置分析
+    echo -e "${cyan}3. 当前生效配置 (sshd -T)${white}"
+    echo "================================"
+
+    # 关键配置项
+    local configs=(
+        "Port:SSH端口"
+        "PermitRootLogin:Root登录方式"
+        "PasswordAuthentication:密码认证"
+        "PubkeyAuthentication:公钥认证"
+        "X11Forwarding:X11转发"
+        "UseDNS:DNS查找"
+        "ClientAliveInterval:连接保活间隔"
+        "ClientAliveCountMax:连接保活次数"
+        "MaxAuthTries:最大认证尝试"
+        "LoginGraceTime:登录宽限时间"
+    )
+
+    for config_desc in "${configs[@]}"; do
+        local config_name="${config_desc%%:*}"
+        local config_desc_text="${config_desc##*:}"
+        local value=$(sshd -T 2>/dev/null | grep -i "^$config_name " | awk '{print $2}' || echo "未设置")
+
+        # 特殊处理PermitRootLogin
+        if [[ "$config_name" == "PermitRootLogin" ]]; then
+            case "$value" in
+                "prohibit-password")
+                    printf "  %-20s: %s %s\n" "$config_desc_text" "$value" "✓ (新语法)"
+                    ;;
+                "without-password")
+                    printf "  %-20s: %s %s\n" "$config_desc_text" "$value" "⚠ (旧语法)"
+                    ;;
+                "no")
+                    printf "  %-20s: %s %s\n" "$config_desc_text" "$value" "ℹ (完全禁用)"
+                    ;;
+                "yes")
+                    printf "  %-20s: %s %s\n" "$config_desc_text" "$value" "✗ (不安全)"
+                    ;;
+                *)
+                    printf "  %-20s: %s\n" "$config_desc_text" "$value"
+                    ;;
+            esac
+        else
+            printf "  %-20s: %s\n" "$config_desc_text" "$value"
+        fi
+    done
+    echo "================================"
+    echo ""
+
+    # 4. 配置文件来源分析
+    echo -e "${cyan}4. 配置文件来源分析${white}"
+
+    # 主配置文件
+    if [[ -f "/etc/ssh/sshd_config" ]]; then
+        echo "主配置文件: /etc/ssh/sshd_config"
+        if grep -q "^PermitRootLogin" "/etc/ssh/sshd_config" 2>/dev/null; then
+            local main_permit=$(grep "^PermitRootLogin" "/etc/ssh/sshd_config" | tail -1 | awk '{print $2}')
+            echo "  PermitRootLogin: $main_permit"
+        else
+            echo "  PermitRootLogin: 未设置 (使用默认值)"
+        fi
+    fi
+
+    # 配置目录
+    if [[ -d "/etc/ssh/sshd_config.d" ]]; then
+        echo ""
+        echo "配置目录: /etc/ssh/sshd_config.d/"
+        local config_files=($(ls /etc/ssh/sshd_config.d/*.conf 2>/dev/null | sort))
+
+        if [[ ${#config_files[@]} -gt 0 ]]; then
+            for config_file in "${config_files[@]}"; do
+                local filename=$(basename "$config_file")
+                echo "  文件: $filename"
+
+                if grep -q "PermitRootLogin" "$config_file" 2>/dev/null; then
+                    local file_permit=$(grep "PermitRootLogin" "$config_file" | tail -1 | awk '{print $2}')
+                    echo "    PermitRootLogin: $file_permit"
+
+                    # 标识云服务商配置
+                    if [[ "$filename" =~ cloud|cloudimg ]]; then
+                        echo "    (云服务商配置)"
+                    fi
+                fi
+            done
+        else
+            echo "  (无配置文件)"
+        fi
+    fi
+    echo ""
+
+    # 5. 安全评估
+    echo -e "${cyan}5. 安全配置评估${white}"
+    local security_score=0
+    local max_score=6
+
+    # 检查各项安全配置
+    local current_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}')
+    local permit_root=$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}')
+    local password_auth=$(sshd -T 2>/dev/null | grep -i '^passwordauthentication ' | awk '{print $2}')
+    local pubkey_auth=$(sshd -T 2>/dev/null | grep -i '^pubkeyauthentication ' | awk '{print $2}')
+    local x11_forward=$(sshd -T 2>/dev/null | grep -i '^x11forwarding ' | awk '{print $2}')
+    local use_dns=$(sshd -T 2>/dev/null | grep -i '^usedns ' | awk '{print $2}')
+
+    # 端口安全
+    if [[ "$current_port" != "22" ]]; then
+        echo -e "${green}✓ 非默认端口: $current_port${white}"
+        ((security_score++))
+    else
+        echo -e "${yellow}⚠ 使用默认端口: 22${white}"
+    fi
+
+    # Root登录安全
+    case "$permit_root" in
+        "prohibit-password"|"without-password")
+            echo -e "${green}✓ Root仅密钥登录: $permit_root${white}"
+            ((security_score++))
+            ;;
+        "no")
+            echo -e "${green}✓ Root登录已禁用${white}"
+            ((security_score++))
+            ;;
+        *)
+            echo -e "${red}✗ Root登录不安全: $permit_root${white}"
+            ;;
+    esac
+
+    # 密码认证
+    if [[ "$password_auth" == "no" ]]; then
+        echo -e "${green}✓ 密码认证已禁用${white}"
+        ((security_score++))
+    else
+        echo -e "${red}✗ 密码认证仍启用${white}"
+    fi
+
+    # 公钥认证
+    if [[ "$pubkey_auth" == "yes" ]]; then
+        echo -e "${green}✓ 公钥认证已启用${white}"
+        ((security_score++))
+    else
+        echo -e "${red}✗ 公钥认证未启用${white}"
+    fi
+
+    # X11转发 (根据用户偏好)
+    if [[ "$x11_forward" == "yes" ]]; then
+        echo -e "${green}✓ X11转发已启用 (用户偏好)${white}"
+        ((security_score++))
+    else
+        echo -e "${yellow}⚠ X11转发未启用${white}"
+    fi
+
+    # DNS查找优化
+    if [[ "$use_dns" == "no" ]]; then
+        echo -e "${green}✓ DNS查找已禁用 (加快登录)${white}"
+        ((security_score++))
+    else
+        echo -e "${yellow}⚠ DNS查找仍启用${white}"
+    fi
+
+    echo ""
+    echo -e "${cyan}安全评分: $security_score/$max_score${white}"
+
+    if [[ $security_score -ge 5 ]]; then
+        echo -e "${green}✓ 安全配置良好${white}"
+    elif [[ $security_score -ge 3 ]]; then
+        echo -e "${yellow}⚠ 安全配置一般，建议优化${white}"
+    else
+        echo -e "${red}✗ 安全配置较差，需要改进${white}"
+    fi
+
+    # 6. 改进建议
+    echo ""
+    echo -e "${cyan}6. 改进建议${white}"
+
+    if [[ "$permit_root" == "without-password" ]]; then
+        echo "• 更新PermitRootLogin语法: without-password → prohibit-password"
+    fi
+
+    if [[ "$current_port" == "22" ]]; then
+        echo "• 修改SSH端口为非默认端口"
+    fi
+
+    if [[ "$password_auth" != "no" ]]; then
+        echo "• 禁用密码认证，仅使用密钥登录"
+    fi
+
+    if [[ "$x11_forward" != "yes" ]]; then
+        echo "• 启用X11转发 (根据用户偏好)"
+    fi
+
+    if [[ "$use_dns" != "no" ]]; then
+        echo "• 禁用DNS查找以加快登录速度"
+    fi
+
+    echo ""
+    break_end
+}
+
 # setup_ssh_keys 函数保持兼容性
 setup_ssh_keys() {
     smart_ssh_key_setup
@@ -1467,8 +1893,8 @@ EOF
     success_msg "自定义SSH配置已创建: $custom_config"
 }
 
-# 验证SSH配置
-verify_ssh_config() {
+# 验证SSH配置 (简化版)
+verify_ssh_config_simple() {
     info_msg "验证SSH配置..."
 
     # 测试配置文件语法
@@ -1510,18 +1936,29 @@ verify_ssh_config() {
 
     echo "================================"
 
-    # 安全配置验证
+    # 安全配置验证 (增强版 - 检测语法问题)
     echo -e "${cyan}3. 安全配置验证...${white}"
 
-    # 检查PermitRootLogin
+    # 检查PermitRootLogin (增强检测)
     local permit_root=$(sshd -T | grep -i "^PermitRootLogin " | awk '{print $2}')
-    if [[ "$permit_root" == "without-password" || "$permit_root" == "prohibit-password" ]]; then
-        echo -e "${green}✓ Root用户仅允许密钥登录${white}"
-    elif [[ "$permit_root" == "no" ]]; then
-        echo -e "${yellow}⚠ Root用户完全禁止登录${white}"
-    elif [[ "$permit_root" == "yes" ]]; then
-        echo -e "${red}✗ Root用户允许密码登录（不安全）${white}"
-    fi
+    case "$permit_root" in
+        "prohibit-password")
+            echo -e "${green}✓ Root用户仅允许密钥登录 (新语法)${white}"
+            ;;
+        "without-password")
+            echo -e "${yellow}⚠ Root用户仅允许密钥登录 (旧语法)${white}"
+            echo -e "  ${cyan}建议: 更新为新语法 'prohibit-password'${white}"
+            ;;
+        "no")
+            echo -e "${blue}ℹ Root用户完全禁止登录${white}"
+            ;;
+        "yes")
+            echo -e "${red}✗ Root用户允许密码登录 (不安全)${white}"
+            ;;
+        *)
+            echo -e "${red}? 未知的PermitRootLogin配置: $permit_root${white}"
+            ;;
+    esac
 
     # 检查密码认证
     local password_auth=$(sshd -T | grep -i "^PasswordAuthentication " | awk '{print $2}')
@@ -2043,12 +2480,13 @@ ssh_config_management() {
         echo "5. SSH密钥管理"
         echo "6. 查看当前SSH配置 (sshd -T)"
         echo "7. 处理云服务商配置冲突"
-        echo "8. SSH服务管理"
+        echo "8. 修复PermitRootLogin语法 (without-password → prohibit-password)"
+        echo "9. SSH服务管理"
         echo "0. 返回主菜单"
         echo ""
 
         local choice
-        prompt_for_input "请选择 [0-8]: " choice validate_numeric_range 0 8
+        prompt_for_input "请选择 [0-9]: " choice validate_numeric_range 0 9
 
         case $choice in
             1)
@@ -2073,6 +2511,9 @@ ssh_config_management() {
                 handle_cloud_config_conflicts
                 ;;
             8)
+                fix_permit_root_login_syntax
+                ;;
+            9)
                 ssh_service_management
                 ;;
             0)
@@ -3523,9 +3964,8 @@ root hard nproc 1000000
 EOF
 
     # 设置systemd服务限制
-    if [[ -d /etc/systemd/system.conf.d ]]; then
-        mkdir -p /etc/systemd/system.conf.d
-    fi
+    # 确保目录存在
+    mkdir -p /etc/systemd/system.conf.d
 
     cat > /etc/systemd/system.conf.d/limits.conf << EOF
 [Manager]
@@ -4678,6 +5118,10 @@ install_fail2ban() {
 # 配置fail2ban
 configure_fail2ban() {
     info_msg "配置fail2ban..."
+
+    # 确保fail2ban目录存在
+    mkdir -p /etc/fail2ban/filter.d
+    mkdir -p /etc/fail2ban/jail.d
 
     # 备份原始配置
     backup_file /etc/fail2ban/jail.conf
