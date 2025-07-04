@@ -93,7 +93,12 @@ check_system_requirements() {
 # Validate domain format
 validate_domain() {
     local domain=$1
-    if [[ ! "$domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]*\.[a-zA-Z]{2,}$ ]]; then
+    # 支持所有顶级域名，包括国际化域名
+    if [[ ! "$domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]\.[a-zA-Z]{2,}$ ]]; then
+        return 1
+    fi
+    # 检查是否包含至少一个点
+    if [[ ! "$domain" =~ \. ]]; then
         return 1
     fi
     return 0
@@ -110,49 +115,56 @@ validate_email() {
 
 # Get user input with validation
 get_user_input() {
-    log_info "Collecting configuration parameters..."
+    log_info "正在收集配置参数..."
+    
+    echo -e "${BLUE}[说明]${NC} 请准备以下信息："
+    echo "  1. 您在 Cloudflare 中配置的域名 (非伪装域名)"
+    echo "  2. 用于申请 SSL 证书的邮箱地址"
+    echo "  3. Cloudflare API Token (需要 Zone:DNS:Edit 权限)"
+    echo ""
     
     # Get domain
     while true; do
-        read -p "Enter your domain (e.g., example.com): " DOMAIN
+        read -p "请输入您的域名 (例如: example.com, test.cn): " DOMAIN
         if validate_domain "$DOMAIN"; then
+            log_info "将为域名 $DOMAIN 配置 VLESS 代理服务"
             break
         else
-            log_error "Invalid domain format. Please enter a valid domain."
+            log_error "域名格式无效，请输入有效的域名格式"
         fi
     done
     
     # Get email
     while true; do
-        read -p "Enter your email for SSL certificate: " EMAIL
+        read -p "请输入您的邮箱地址 (用于 SSL 证书申请): " EMAIL
         if validate_email "$EMAIL"; then
             break
         else
-            log_error "Invalid email format. Please enter a valid email address."
+            log_error "邮箱格式无效，请输入有效的邮箱地址"
         fi
     done
     
     # Get Cloudflare API token
     while true; do
-        read -s -p "Enter your Cloudflare API Token: " CF_API_TOKEN
+        read -s -p "请输入您的 Cloudflare API Token: " CF_API_TOKEN
         echo
         if [[ -n "$CF_API_TOKEN" && ${#CF_API_TOKEN} -gt 10 ]]; then
             break
         else
-            log_error "Invalid API token. Please enter a valid Cloudflare API token."
+            log_error "API Token 无效，请输入有效的 Cloudflare API Token"
         fi
     done
     
-    log_success "Configuration parameters collected"
+    log_success "配置参数收集完成"
 }
 
 # Update system packages
 update_system() {
-    log_info "Updating system packages..."
+    log_info "正在更新系统软件包..."
     
     # Check if update is needed (idempotency)
     if [[ -f "/var/log/vless-setup-updated" ]]; then
-        log_info "System already updated, skipping..."
+        log_info "系统已经更新，跳过..."
         return 0
     fi
     
@@ -163,56 +175,56 @@ update_system() {
     
     # Mark as updated
     touch "/var/log/vless-setup-updated"
-    log_success "System packages updated"
+    log_success "系统软件包更新完成"
 }
 
 # Install Nginx
 install_nginx() {
-    log_info "Installing Nginx..."
+    log_info "正在安装 Nginx..."
     
     # Check if already installed
     if systemctl is-active --quiet nginx 2>/dev/null; then
-        log_info "Nginx already installed and running"
+        log_info "Nginx 已经安装并运行"
         return 0
     fi
     
     apt install -y nginx
     systemctl enable nginx
-    log_success "Nginx installed"
+    log_success "Nginx 安装完成"
 }
 
 # Install Xray
 install_xray() {
-    log_info "Installing Xray..."
+    log_info "正在安装 Xray..."
     
     # Check if already installed
     if [[ -f "/usr/local/bin/xray" ]]; then
-        log_info "Xray already installed"
+        log_info "Xray 已经安装"
         return 0
     fi
     
     bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-    log_success "Xray installed"
+    log_success "Xray 安装完成"
 }
 
 # Install ACME.sh
 install_acme() {
-    log_info "Installing ACME.sh..."
+    log_info "正在安装 ACME.sh..."
     
     # Check if already installed
     if [[ -f "/root/.acme.sh/acme.sh" ]]; then
-        log_info "ACME.sh already installed"
+        log_info "ACME.sh 已经安装"
         return 0
     fi
     
     curl https://get.acme.sh | sh -s email="$EMAIL"
     source ~/.bashrc
-    log_success "ACME.sh installed"
+    log_success "ACME.sh 安装完成"
 }
 
 # Generate cryptographic keys
 generate_keys() {
-    log_info "Generating cryptographic keys..."
+    log_info "正在生成加密密钥..."
     
     # Create temp directory
     mkdir -p "$TEMP_DIR"
@@ -228,12 +240,12 @@ generate_keys() {
     # Generate short ID (8 hex characters)
     SHORT_ID=$(openssl rand -hex 4)
     
-    log_success "Keys generated successfully"
+    log_success "加密密钥生成完成"
 }
 
 # Configure Nginx
 configure_nginx() {
-    log_info "Configuring Nginx..."
+    log_info "正在配置 Nginx..."
     
     # Create SSL directory
     mkdir -p /etc/ssl/private
@@ -296,16 +308,16 @@ EOF
     
     # Test nginx configuration
     if nginx -t; then
-        log_success "Nginx configuration created successfully"
+        log_success "Nginx 配置文件创建成功"
     else
-        log_error "Nginx configuration test failed"
+        log_error "Nginx 配置文件测试失败"
         exit 1
     fi
 }
 
 # Configure Xray
 configure_xray() {
-    log_info "Configuring Xray..."
+    log_info "正在配置 Xray..."
     
     # Create Xray configuration
     cat > "$XRAY_CONF_PATH" << EOF
@@ -398,12 +410,12 @@ EOF
     # Set proper permissions
     chmod 644 "$XRAY_CONF_PATH"
     
-    log_success "Xray configuration created successfully"
+    log_success "Xray 配置文件创建成功"
 }
 
 # Setup SSL certificates
 setup_ssl() {
-    log_info "Setting up SSL certificates..."
+    log_info "正在配置 SSL 证书..."
     
     # Set Cloudflare API token
     export CF_Token="$CF_API_TOKEN"
@@ -415,12 +427,12 @@ setup_ssl() {
     chmod 600 /etc/ssl/private/${DOMAIN}.key
     chmod 644 /etc/ssl/private/${DOMAIN}.crt
     
-    log_success "SSL certificates configured"
+    log_success "SSL 证书配置完成"
 }
 
 # Configure firewall
 configure_firewall() {
-    log_info "Configuring firewall..."
+    log_info "正在配置防火墙..."
     
     # Reset UFW to default
     ufw --force reset
@@ -439,12 +451,12 @@ configure_firewall() {
     # Enable firewall
     ufw --force enable
     
-    log_success "Firewall configured"
+    log_success "防火墙配置完成"
 }
 
 # Start services
 start_services() {
-    log_info "Starting services..."
+    log_info "正在启动服务..."
     
     # Start and enable Nginx
     systemctl restart nginx
@@ -456,9 +468,9 @@ start_services() {
     
     # Check service status
     if systemctl is-active --quiet nginx && systemctl is-active --quiet xray; then
-        log_success "All services started successfully"
+        log_success "所有服务启动成功"
     else
-        log_error "Some services failed to start"
+        log_error "部分服务启动失败"
         systemctl status nginx --no-pager
         systemctl status xray --no-pager
         exit 1
@@ -467,7 +479,7 @@ start_services() {
 
 # Generate client configurations
 generate_client_config() {
-    log_info "Generating client configurations..."
+    log_info "正在生成客户端配置文件..."
     
     # Create client config directory
     mkdir -p /root/client-configs
@@ -561,42 +573,42 @@ EOF
 
 # Display summary
 display_summary() {
-    log_success "Setup completed successfully!"
+    log_success "安装配置完成！"
     
     echo ""
     echo "╔════════════════════════════════════════════════════════════════════════════════════════════════╗"
-    echo "║                                    CONFIGURATION SUMMARY                                      ║"
+    echo "║                                        配置信息汇总                                            ║"
     echo "╠════════════════════════════════════════════════════════════════════════════════════════════════╣"
-    echo "║ Domain:           $DOMAIN"
+    echo "║ 域名:           $DOMAIN"
     echo "║ UUID:             $UUID"
-    echo "║ Private Key:      $PRIVATE_KEY"
-    echo "║ Public Key:       $PUBLIC_KEY"
+    echo "║ 私钥:      $PRIVATE_KEY"
+    echo "║ 公钥:       $PUBLIC_KEY"
     echo "║ Short ID:         $SHORT_ID"
     echo "║"
-    echo "║ Client Configs:   /root/client-configs/"
-    echo "║ Nginx Config:     $NGINX_CONF_PATH"
-    echo "║ Xray Config:      $XRAY_CONF_PATH"
+    echo "║ 客户端配置:   /root/client-configs/"
+    echo "║ Nginx 配置:     $NGINX_CONF_PATH"
+    echo "║ Xray 配置:      $XRAY_CONF_PATH"
     echo "║"
-    echo "║ Services Status:"
+    echo "║ 服务状态:"
     echo "║ - Nginx:          $(systemctl is-active nginx)"
     echo "║ - Xray:           $(systemctl is-active xray)"
-    echo "║ - Firewall:       $(ufw status | head -n1 | cut -d' ' -f2)"
+    echo "║ - 防火墙:       $(ufw status | head -n1 | cut -d' ' -f2)"
     echo "╠════════════════════════════════════════════════════════════════════════════════════════════════╣"
-    echo "║                                      SHARE LINKS                                               ║"
+    echo "║                                          分享链接                                               ║"
     echo "╠════════════════════════════════════════════════════════════════════════════════════════════════╣"
-    echo "║ Reality Link:     $(cat /root/client-configs/reality-share-link.txt)"
+    echo "║ Reality 链接:     $(cat /root/client-configs/reality-share-link.txt)"
     echo "║"
-    echo "║ gRPC Link:        $(cat /root/client-configs/grpc-share-link.txt)"
+    echo "║ gRPC 链接:        $(cat /root/client-configs/grpc-share-link.txt)"
     echo "╚════════════════════════════════════════════════════════════════════════════════════════════════╝"
     echo ""
     
-    log_info "Configuration files saved in /root/client-configs/"
-    log_info "For support and troubleshooting, check the logs in /var/log/xray/"
+    log_info "配置文件已保存在 /root/client-configs/ 目录中"
+    log_info "如需技术支持和故障排查，请检查 /var/log/xray/ 中的日志文件"
 }
 
 # Main execution function
 main() {
-    log_info "Starting VLESS-gRPC-REALITY setup..."
+    log_info "开始 VLESS-gRPC-REALITY 安装配置..."
     
     check_privileges
     check_system_requirements
@@ -614,7 +626,7 @@ main() {
     generate_client_config
     display_summary
     
-    log_success "Setup completed successfully!"
+    log_success "安装配置完成！"
 }
 
 # Run main function
