@@ -93,14 +93,48 @@ check_system_requirements() {
 # Validate domain format
 validate_domain() {
     local domain=$1
-    # 支持所有顶级域名，包括国际化域名
-    if [[ ! "$domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]\.[a-zA-Z]{2,}$ ]]; then
+    
+    # 基本检查：不能为空
+    if [[ -z "$domain" ]]; then
         return 1
     fi
-    # 检查是否包含至少一个点
-    if [[ ! "$domain" =~ \. ]]; then
+    
+    # 检查域名长度不超过253字符
+    if [[ ${#domain} -gt 253 ]]; then
         return 1
     fi
+    
+    # 检查包含至少一个点
+    if [[ ! "$domain" == *.* ]]; then
+        return 1
+    fi
+    
+    # 检查没有连续的点
+    if [[ "$domain" == *..* ]]; then
+        return 1
+    fi
+    
+    # 检查不以点开头或结尾
+    if [[ "$domain" == .* ]] || [[ "$domain" == *. ]]; then
+        return 1
+    fi
+    
+    # 检查不以连字符开头或结尾
+    if [[ "$domain" == -* ]] || [[ "$domain" == *- ]]; then
+        return 1
+    fi
+    
+    # 检查顶级域名是字母且至少2位
+    local tld="${domain##*.}"
+    if [[ ! "$tld" =~ ^[a-zA-Z]{2,}$ ]]; then
+        return 1
+    fi
+    
+    # 检查域名只包含允许的字符：字母、数字、点、连字符
+    if [[ ! "$domain" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+        return 1
+    fi
+    
     return 0
 }
 
