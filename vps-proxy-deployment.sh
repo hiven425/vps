@@ -219,14 +219,30 @@ download_xray() {
     
     info_msg "最新版本: $latest_version"
     
+    # 创建临时目录（改进的方式）
+    local temp_dir="/tmp/xray-install-$$"
+    mkdir -p "$temp_dir" || error_exit "无法创建临时目录"
+    
     # 下载文件
     local download_url="https://github.com/XTLS/Xray-core/releases/download/$latest_version/Xray-linux-$arch.zip"
-    local temp_dir=$(mktemp -d)
     local zip_file="$temp_dir/xray.zip"
     
     if ! curl -L -o "$zip_file" "$download_url"; then
         rm -rf "$temp_dir"
         error_exit "下载Xray失败"
+    fi
+    
+    # 检查并安装unzip
+    if ! command -v unzip >/dev/null 2>&1; then
+        info_msg "安装unzip工具..."
+        case $PACKAGE_MANAGER in
+            apt)
+                apt update -qq && apt install -y unzip
+                ;;
+            yum|dnf)
+                $PACKAGE_MANAGER install -y unzip
+                ;;
+        esac
     fi
     
     # 解压并安装
@@ -1306,6 +1322,9 @@ main() {
             if ! command -v curl >/dev/null 2>&1; then
                 apt update -qq && apt install -y curl
             fi
+            if ! command -v unzip >/dev/null 2>&1; then
+                apt install -y unzip 2>/dev/null || true
+            fi
             # 安装二维码生成工具
             if ! command -v qrencode >/dev/null 2>&1; then
                 apt install -y qrencode 2>/dev/null || true
@@ -1314,6 +1333,9 @@ main() {
         yum|dnf)
             if ! command -v curl >/dev/null 2>&1; then
                 $PACKAGE_MANAGER install -y curl
+            fi
+            if ! command -v unzip >/dev/null 2>&1; then
+                $PACKAGE_MANAGER install -y unzip 2>/dev/null || true
             fi
             # 安装二维码生成工具
             if ! command -v qrencode >/dev/null 2>&1; then
