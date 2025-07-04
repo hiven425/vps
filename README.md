@@ -1,558 +1,360 @@
-# VPS Security Hardening & Advanced Proxy Deployment Tool
+# VPS安全工具包 v3.0.0
 
-一个集成VPS安全加固和智能VLESS-REALITY代理部署的企业级一体化工具，融合了业界最佳实践和创新技术。
+一个专业的VPS服务器安全加固和代理部署工具集，采用模块化设计，提供完整的安全解决方案。
 
-## ✨ 核心特性
+## ✨ 项目特色
 
-### 🛡️ 全面安全加固
-- **SSH安全配置**: 智能端口管理、密钥认证、云服务商兼容性检测
-- **防火墙防护**: UFW/iptables自动配置、DDoS防护、IPv6双栈支持
-- **系统优化**: BBR拥塞控制、网络参数调优、性能监控
-- **入侵防护**: fail2ban智能防护、异常行为检测
-- **智能诊断**: 自动问题检测、配置验证、健康评估
+### 🏗️ 模块化架构
+- **主脚本**: 集成安全加固和代理部署的一体化工具
+- **安全专用**: 专注于系统安全加固的专业工具
+- **代理专用**: 专注于VLESS-REALITY代理部署的专用工具
+- **模块支持**: 支持增强日志、服务管理等扩展模块
 
-### 🚀 企业级代理部署
-- **三层部署架构**: 新手/高级/专家模式，满足不同用户需求
-- **VLESS-REALITY协议**: 最新抗检测技术，TLS指纹伪装
-- **智能配置**: 自动端口选择、目标网站优化、性能调优
-- **多客户端支持**: JSON配置、分享链接、二维码、Clash配置
-- **一键部署**: 60秒内完成完整部署，零配置要求
+### 🛡️ 安全加固功能
+- **SSH安全配置**: 端口修改、密钥认证、云配置冲突处理
+- **防火墙管理**: UFW/iptables配置、fail2ban入侵防护
+- **系统加固**: 内核参数优化、服务管理、自动更新
+- **安全审计**: 全面的安全检查和漏洞扫描
 
-### 🎯 智能化体验
-- **环境自适应**: 自动检测系统环境、网络状况、服务冲突
-- **可视化界面**: 实时状态显示、进度跟踪、彩色交互
-- **故障自修复**: 智能诊断、自动修复、配置回滚
-- **性能优化**: 网络调优、资源管理、连接优化
-- **批量操作**: 多选任务、并行执行、进度监控
+### 🚀 代理部署功能
+- **VLESS-REALITY**: 最新抗检测代理协议
+- **智能配置**: 自动端口选择、目标网站优化
+- **多客户端支持**: JSON、分享链接、二维码、Clash配置
+- **一键部署**: 快速部署和自定义配置模式
 
-## 🏗️ 系统架构
+## 📁 项目结构
 
-### 部署模式设计
 ```
-┌─ Tier 1: 新手模式 ─────────────────┐
-│ • 一键部署 (< 60秒)                │
-│ • 智能默认配置                      │
-│ • 零用户干预                        │
-└────────────────────────────────────┘
-
-┌─ Tier 2: 高级模式 ─────────────────┐
-│ • 交互式配置                        │
-│ • SNI过滤防护                       │
-│ • WARP路由策略                      │
-│ • IPv6双栈支持                      │
-└────────────────────────────────────┘
-
-┌─ Tier 3: 专家模式 ─────────────────┐
-│ • 完全自定义控制                    │
-│ • 性能参数调优                      │
-│ • 高级诊断工具                      │
-│ • 多协议扩展                        │
-└────────────────────────────────────┘
+vps-security-toolkit/
+├── vps-security-toolkit.sh       # 主脚本 (安全+代理一体化)
+├── vps-security-hardening.sh     # 纯安全加固脚本
+├── vps-proxy-deployment.sh       # 纯代理部署脚本
+├── README.md                      # 项目文档 (本文件)
+├── enhanced-logging.sh            # 增强日志模块 (可选)
+├── secure-service-manager.sh      # 安全服务管理模块 (可选)
+└── security-fixes.sh              # 安全修复补丁模块 (可选)
 ```
-
-### 智能决策流程
-```
-系统检测 → 环境适配 → 端口优选 → 目标优化 → 配置生成 → 服务部署 → 验证测试
-    ↓         ↓         ↓         ↓         ↓         ↓         ↓
- 兼容性     网络状况   冲突检测   连通测试   密钥生成   服务启动   功能验证
-```
-
-## 📋 系统要求
-
-### 支持平台
-- **Ubuntu**: 18.04+ (推荐 20.04/22.04)
-- **Debian**: 9+ (推荐 11/12)
-- **CentOS**: 7+ (推荐 8/9)
-- **架构**: x86_64, ARM64
-
-### 资源要求
-- **权限**: Root访问权限
-- **内存**: 最小512MB，推荐1GB+
-- **存储**: 最小10GB可用空间
-- **网络**: 稳定互联网连接
 
 ## 🚀 快速开始
 
-### 一键安装部署
+### 权限要求
+所有脚本都需要root权限运行：
 ```bash
-# 下载并执行（推荐方式）
-curl -sS -O https://raw.githubusercontent.com/your-repo/security-hardening.sh
-chmod +x security-hardening.sh
-sudo ./security-hardening.sh
-
-# 或使用wget
-wget https://raw.githubusercontent.com/your-repo/security-hardening.sh
-chmod +x security-hardening.sh
-sudo ./security-hardening.sh
+sudo chmod +x *.sh
 ```
 
-### 命令行快捷操作
+### 1. 主脚本 - 一体化工具
+适合需要完整功能的用户，同时提供安全加固和代理部署功能。
+
 ```bash
-# 显示详细帮助
-./security-hardening.sh --help
+# 交互模式 (推荐)
+sudo ./vps-security-toolkit.sh
 
-# 一键完整部署（安全+代理）
-./security-hardening.sh --deploy
-
-# 仅安全加固
-./security-hardening.sh --security
-
-# 智能代理部署
-./security-hardening.sh --proxy
-
-# 自定义代理配置
-./security-hardening.sh --proxy-custom
-
-# 系统状态检查
-./security-hardening.sh --status
-
-# 网络质量测试
-./security-hardening.sh --test-network
-
-# 故障诊断
-./security-hardening.sh --proxy-diagnose
+# 快速操作
+sudo ./vps-security-toolkit.sh --ssh        # SSH安全配置
+sudo ./vps-security-toolkit.sh --firewall   # 防火墙配置
+sudo ./vps-security-toolkit.sh --optimize   # 系统优化
+sudo ./vps-security-toolkit.sh --status     # 系统状态
 ```
 
-## 🎛️ 功能模块详解
+### 2. 安全加固专用脚本
+专注于系统安全加固，不包含代理功能。
 
-### 主控制台
-```
-VPS安全加固与代理搭建工具 v2.1.1 Enhanced
-========================================
-📊 系统状态: ✓ 已优化  🚀 代理: 运行中
-========================================
-🚀 快速操作:
-1. 一键完整部署        2. 智能代理部署
-3. 系统安全加固        4. 性能优化
+```bash
+# 交互模式
+sudo ./vps-security-hardening.sh
 
-🔧 高级管理:
-5. 代理管理 ->         6. 安全管理 ->
-7. 服务管理 ->         8. 配置管理 ->
-9. 诊断工具 ->         10. 批量操作
-
-📊 监控工具:
-11. 系统信息          12. 网络测试
-13. 性能监控          14. 日志分析
-========================================
-0. 退出脚本
+# 快速操作
+sudo ./vps-security-hardening.sh --ssh      # SSH安全配置
+sudo ./vps-security-hardening.sh --firewall # 防火墙配置
+sudo ./vps-security-hardening.sh --harden   # 系统加固
+sudo ./vps-security-hardening.sh --audit    # 安全审计
+sudo ./vps-security-hardening.sh --full     # 完整加固
 ```
 
-### 🛡️ 增强安全模块
+### 3. 代理部署专用脚本
+专注于VLESS-REALITY代理部署和管理。
 
-#### SSH安全强化
-- **智能端口管理**: 自动端口冲突检测和优化
-- **云平台适配**: AWS/GCP/Azure/阿里云配置兼容
-- **密钥认证**: RSA/Ed25519密钥自动生成和配置
-- **连接保护**: 防暴力破解、连接限制、会话保活
+```bash
+# 交互模式
+sudo ./vps-proxy-deployment.sh
 
-#### 防火墙智能配置
-- **自适应规则**: 根据服务自动配置防火墙规则
-- **DDoS防护**: SYN洪水、连接频率限制
-- **IPv6支持**: 双栈网络完整支持
+# 快速操作
+sudo ./vps-proxy-deployment.sh --quick      # 快速部署
+sudo ./vps-proxy-deployment.sh --custom     # 自定义部署
+sudo ./vps-proxy-deployment.sh --status     # 代理状态
+sudo ./vps-proxy-deployment.sh --client     # 客户端信息
+```
+
+## 📊 功能对比
+
+| 功能类别 | 主脚本 | 安全专用 | 代理专用 |
+|---------|--------|----------|----------|
+| SSH安全配置 | ✅ | ✅ | ❌ |
+| 防火墙管理 | ✅ | ✅ | 基础 |
+| 系统加固 | ✅ | ✅ | ❌ |
+| 安全审计 | ✅ | ✅ | ❌ |
+| 代理部署 | 基础 | ❌ | ✅ |
+| 服务管理 | ✅ | ✅ | ✅ |
+| 文件大小 | 中等 | 大 | 中等 |
+| 启动速度 | 中等 | 快 | 快 |
+
+## 🛡️ 安全功能详解
+
+### SSH安全配置
+- **端口管理**: 智能端口冲突检测和自动选择
+- **云平台兼容**: 自动处理AWS/GCP/Azure/阿里云配置冲突
+- **认证安全**: 禁用密码认证，强制密钥认证
+- **现代加密**: 仅允许安全的加密算法和协议
+- **连接保护**: 限制认证尝试、会话管理、连接保活
+
+### 防火墙防护
+- **UFW管理**: 自动UFW防火墙配置和规则管理
+- **fail2ban**: 入侵检测和自动封禁功能
 - **端口管理**: 智能端口开放和安全检查
+- **规则优化**: 基于服务需求的智能规则生成
 
-#### 系统性能优化
-- **网络调优**: BBR拥塞控制、TCP参数优化
-- **内核优化**: 文件描述符、网络缓冲区调整
-- **资源管理**: 内存、CPU调度优化
-- **监控集成**: 实时性能监控和告警
+### 系统加固
+- **内核参数**: 网络安全、内存保护、性能优化参数
+- **服务管理**: 禁用不必要服务、安全配置
+- **自动更新**: 系统安全更新自动化配置
+- **权限控制**: 文件权限检查和修复
 
-### 🚀 智能代理部署
+### 安全审计
+- **SSH审计**: SSH配置安全性全面检查
+- **系统审计**: 文件权限、服务状态、进程检查
+- **漏洞扫描**: 常见安全问题和配置错误检测
+- **合规检查**: 安全基线和最佳实践验证
 
-#### 三层架构设计
+## 🚀 代理功能详解
 
-**Tier 1: 一键智能部署**
+### VLESS-REALITY协议
+- **协议版本**: 最新REALITY标准实现
+- **传输优化**: HTTP/2多路复用，XTLS-RPRX-Vision流控
+- **安全特性**: X25519密钥交换，TLS指纹完美伪装
+- **抗检测**: 真实TLS握手，无法被识别为代理流量
+
+### 智能配置
+- **端口选择**: 443 → 8443 → 随机高端口智能选择
+- **目标网站**: 延迟测试选择最优伪装目标
+- **密钥管理**: 自动生成高强度密钥对
+- **性能调优**: 根据服务器性能自动优化参数
+
+### 客户端支持
+- **配置格式**: JSON配置、分享链接、二维码、Clash配置
+- **客户端兼容**: 
+  - Android: v2rayNG
+  - iOS: Shadowrocket
+  - Windows: v2rayN
+  - macOS: V2RayXS
+  - Linux: Xray客户端
+  - 路由器: Clash系列
+
+### 部署模式
+- **快速部署**: 60秒内完成，零配置干预
+- **自定义部署**: 完全自定义所有参数
+- **批量部署**: 支持多实例和配置模板
+
+## 📋 系统要求
+
+### 支持的操作系统
+- **Ubuntu**: 18.04+ (推荐 20.04/22.04/24.04)
+- **Debian**: 9+ (推荐 11/12)
+- **CentOS**: 7+ (推荐 8/9)
+- **RHEL**: 7+
+- **Fedora**: 最新版本
+
+### 硬件要求
+- **权限**: Root访问权限
+- **内存**: 最小512MB，推荐1GB+
+- **存储**: 最小5GB可用空间
+- **网络**: 稳定的互联网连接
+- **架构**: x86_64, ARM64
+
+### 网络要求
+- **出站连接**: 443, 80端口可访问
+- **DNS解析**: 能够解析github.com等域名
+- **防火墙**: 允许脚本配置的端口
+
+## 🔧 高级配置
+
+### 配置文件位置
 ```bash
-特点: 零配置、自动优化、极速部署
-流程: 环境检测 → 智能配置 → 自动部署 → 验证完成
-时间: < 60秒完成部署
-适用: 新手用户、快速部署场景
+# 主配置目录
+/etc/vps-security-toolkit/    # 主脚本配置
+/etc/vps-security/            # 安全脚本配置  
+/etc/vps-proxy/               # 代理脚本配置
+
+# 日志文件
+/var/log/vps-security.log         # 主脚本日志
+/var/log/vps-security-hardening.log  # 安全脚本日志
+/var/log/vps-proxy.log            # 代理脚本日志
+
+# 备份目录
+/etc/*/backup/                # 各模块备份目录
 ```
 
-**Tier 2: 高级自定义**
+### SSH配置文件
 ```bash
-特点: 交互配置、安全增强、灵活选择
-流程: 参数收集 → 安全配置 → 自定义部署 → 性能调优
-时间: 2-5分钟完成配置
-适用: 有经验用户、特定需求
+/etc/ssh/sshd_config.d/99-vps-security.conf    # SSH安全配置
 ```
 
-**Tier 3: 专家完全控制**
+### 代理配置文件
 ```bash
-特点: 完全自定义、性能调优、高级诊断
-流程: 手动配置 → 参数调优 → 高级部署 → 深度优化
-时间: 5-15分钟精细配置
-适用: 专业用户、企业部署
+/usr/local/etc/xray/config.json               # Xray主配置
+/etc/vps-proxy/clients/                       # 客户端配置目录
+├── vless_link.txt                             # 分享链接
+├── client_config.json                         # JSON配置
+├── clash_config.yaml                          # Clash配置
+└── qrcode.png                                 # 二维码
 ```
 
-#### 核心技术特性
-
-**VLESS-REALITY协议**
-- **协议版本**: 最新REALITY标准
-- **传输方式**: HTTP/2多路复用
-- **安全特性**: X25519密钥交换、TLS指纹伪装
-- **流控技术**: XTLS-RPRX-Vision优化
-
-**智能配置算法**
-- **端口选择**: 443 → 8443 → 随机高端口
-- **目标网站**: 延迟测试选择最优目标
-- **密钥生成**: 加密强度最大化
-- **性能优化**: 根据服务器性能自动调整
-
-#### 客户端配置生成
-
-**支持格式**
-- **JSON配置**: 标准Xray客户端配置
-- **分享链接**: vless://协议链接
-- **二维码**: 移动端扫码导入
-- **Clash配置**: Clash/ClashX专用配置
-
-**配置优化**
-- **连接优化**: 自动MTU检测、TCP优化
-- **延迟优化**: 连接复用、keep-alive配置
-- **兼容性**: 多客户端版本兼容
-
-### 🔧 系统管理工具
-
-#### 服务管理中心
-- **一键操作**: 启动/停止/重启所有服务
-- **状态监控**: 实时服务状态、资源占用
-- **日志管理**: 集中化日志查看、分析
-- **健康检查**: 自动服务健康监测
-
-#### 配置管理系统
-- **版本控制**: 配置文件版本管理、回滚
-- **备份恢复**: 自动备份、一键恢复
-- **导入导出**: 配置文件批量管理
-- **模板系统**: 预定义配置模板
-
-#### 诊断工具套件
-- **智能诊断**: 自动问题检测和修复建议
-- **性能分析**: 系统瓶颈识别、优化建议
-- **网络测试**: 连通性、延迟、带宽测试
-- **安全扫描**: 配置安全性检查
-
-## 📊 配置文件结构
-
-### 系统配置目录
-```
-/etc/security-hardening/
-├── config/                    # 主配置目录
-│   ├── proxy_config.conf      # 代理主配置
-│   ├── smart_proxy_config.conf # 智能配置
-│   ├── custom_proxy_config.conf # 自定义配置
-│   └── security_config.conf   # 安全配置
-├── backup/                    # 配置备份
-│   ├── ssh_backup_YYYYMMDD/
-│   ├── firewall_backup_YYYYMMDD/
-│   └── xray_backup_YYYYMMDD/
-├── clients/                   # 客户端配置
-│   ├── vless_link.txt         # 分享链接
-│   ├── client_config.json     # JSON配置
-│   ├── clash_config.yaml      # Clash配置
-│   └── qr_codes/             # 二维码文件
-├── logs/                      # 运行日志
-│   ├── deployment.log         # 部署日志
-│   ├── security.log          # 安全日志
-│   └── proxy.log             # 代理日志
-└── templates/                 # 配置模板
-    ├── security_templates/
-    └── proxy_templates/
-```
-
-### 服务配置文件
-```
-Xray配置: /usr/local/etc/xray/config.json
-SSH配置: /etc/ssh/sshd_config.d/security-hardening.conf
-防火墙规则: /etc/ufw/user.rules (UFW) 或 iptables规则
-系统服务: /etc/systemd/system/xray.service
-```
-
-## 🎯 最佳实践配置
-
-### 推荐安全配置
+### 环境变量配置
 ```bash
-SSH端口: 55520 (自动检测可用端口)
-认证方式: 仅SSH密钥 (禁用密码)
-防火墙策略: 默认拒绝，白名单开放
-fail2ban: 启用SSH和Xray保护
-系统更新: 自动安全更新启用
+# 日志级别
+export VPS_LOG_LEVEL=INFO    # DEBUG, INFO, WARN, ERROR
+
+# 配置目录自定义
+export VPS_CONFIG_DIR=/custom/path
+
+# 跳过某些检查
+export VPS_SKIP_UPDATE_CHECK=true
+export VPS_SKIP_SYSTEM_CHECK=true
 ```
 
-### 推荐代理配置
-```bash
-协议: VLESS over TCP with REALITY
-端口: 443 (HTTPS标准端口)
-目标网站: microsoft.com (自动优选)
-流控: xtls-rprx-vision
-加密: 无 (REALITY提供安全性)
-伪装: 真实TLS握手，完美伪装
-```
+## 🔍 故障排除
 
-### 性能优化配置
-```bash
-BBR拥塞控制: 启用
-TCP参数: 优化高并发连接
-缓冲区: 根据内存自动调整
-文件描述符: 提升至65535
-网络栈: IPv4/IPv6双栈优化
-```
-
-## 🔧 高级功能说明
-
-### 智能故障诊断
-
-#### 自动问题检测
-```bash
-系统兼容性: 操作系统、架构、依赖检查
-网络连通性: DNS解析、目标网站可达性
-服务状态: SSH、Xray、防火墙、fail2ban
-配置完整性: 语法检查、参数验证
-性能瓶颈: CPU、内存、网络、磁盘分析
-```
-
-#### 智能修复建议
-```bash
-端口冲突: 自动寻找可用端口
-配置错误: 提供具体修复建议
-网络问题: DNS修复、路由优化
-服务异常: 自动重启、配置重载
-权限问题: 自动权限修复
-```
-
-### 批量操作系统
-
-#### 多选任务管理
-```bash
-□ SSH安全配置
-□ 防火墙设置  
-□ 系统优化
-□ fail2ban配置
-□ Xray安装
-□ REALITY配置
-□ 客户端生成
-
-操作: [全选] [反选] [确认执行]
-```
-
-#### 并行执行优化
-- **任务调度**: 智能任务依赖分析
-- **进度监控**: 实时进度显示
-- **错误处理**: 单任务失败不影响其他任务
-- **回滚机制**: 失败任务自动回滚
-
-### 性能监控系统
-
-#### 实时监控指标
-```bash
-CPU使用率: 实时显示，历史趋势
-内存使用: 物理内存、交换分区
-网络流量: 入站、出站、连接数
-磁盘I/O: 读写速度、IOPS
-服务状态: 各服务健康状况
-```
-
-#### 告警机制
-- **阈值监控**: 自定义监控阈值
-- **异常检测**: 异常行为自动识别
-- **通知机制**: 日志记录、邮件通知
-- **自动处理**: 预定义处理策略
-
-## 📱 客户端使用指南
-
-### 移动端配置
-
-#### Android (推荐v2rayNG)
-1. **下载客户端**: Google Play或GitHub下载v2rayNG
-2. **导入配置**: 复制VLESS链接或扫描二维码
-3. **连接测试**: 启动代理，测试网络连通性
-4. **优化设置**: 根据网络环境调整参数
-
-#### iOS (推荐Shadowrocket)
-1. **下载客户端**: App Store下载Shadowrocket
-2. **导入配置**: 通过分享链接或二维码导入
-3. **启动代理**: 开启代理，选择全局或规则模式
-4. **连接验证**: 检查IP变化，验证代理效果
-
-### 桌面端配置
-
-#### Windows/macOS (Xray客户端)
-1. **下载客户端**: 从官方GitHub下载对应版本
-2. **配置导入**: 使用生成的client_config.json
-3. **代理设置**: 配置系统代理或浏览器代理
-4. **连接测试**: 验证代理功能和速度
-
-#### Linux (命令行)
-```bash
-# 下载Xray客户端
-wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-unzip Xray-linux-64.zip
-chmod +x xray
-
-# 使用生成的配置文件
-./xray -config client_config.json
-
-# 配置系统代理
-export http_proxy=http://127.0.0.1:10808
-export https_proxy=http://127.0.0.1:10808
-```
-
-### Clash系列客户端
-
-#### Clash for Windows/macOS
-1. **配置导入**: 使用生成的clash_config.yaml
-2. **规则配置**: 选择代理规则（全局/规则/直连）
-3. **节点测试**: 测试节点延迟和可用性
-4. **自动更新**: 配置订阅自动更新
-
-## 🔍 故障排除指南
-
-### 常见问题解决
+### 常见问题
 
 #### SSH连接问题
 ```bash
-问题: SSH连接被拒绝
-检查: 1. 新端口是否正确 (default: 55520)
-      2. 防火墙规则是否生效
-      3. SSH服务是否正常运行
-      4. 密钥文件权限是否正确
+# 检查SSH服务状态
+sudo systemctl status sshd
 
-解决: 使用脚本的诊断功能自动检测和修复
-命令: ./security-hardening.sh --proxy-diagnose
+# 检查SSH配置语法
+sudo sshd -t
+
+# 查看SSH端口设置
+sudo ./vps-security-hardening.sh --status
+
+# 重置SSH配置 (紧急情况)
+sudo cp /etc/ssh/sshd_config.backup /etc/ssh/sshd_config
+sudo systemctl restart sshd
 ```
 
 #### 代理连接问题
 ```bash
-问题: 代理无法连接
-检查: 1. Xray服务状态
-      2. 防火墙端口开放
-      3. 客户端配置正确性
-      4. 网络连通性
+# 检查Xray服务状态
+sudo systemctl status xray
 
-解决: 运行内置故障诊断
-命令: systemctl status xray
-      journalctl -u xray -f
+# 查看Xray日志
+sudo journalctl -u xray -f
+
+# 检查代理配置
+sudo ./vps-proxy-deployment.sh --status
+
+# 验证配置文件
+sudo xray test -config /usr/local/etc/xray/config.json
 ```
 
-#### 性能问题
+#### 防火墙问题
 ```bash
-问题: 系统性能下降
-检查: 1. CPU和内存使用率
-      2. 网络连接数
-      3. 磁盘I/O状况
-      4. 系统负载
+# 检查UFW状态
+sudo ufw status verbose
 
-解决: 使用性能优化功能
-命令: ./security-hardening.sh --proxy-optimize
+# 检查fail2ban状态
+sudo fail2ban-client status
+
+# 临时禁用防火墙 (紧急情况)
+sudo ufw disable
 ```
 
-### 日志分析工具
-
-#### 系统日志
+### 日志分析
 ```bash
-# 脚本操作日志
-tail -f /var/log/security-hardening.log
+# 查看安全日志
+sudo tail -f /var/log/vps-security-hardening.log
 
-# Xray服务日志
-journalctl -u xray -f --no-pager
+# 查看代理日志
+sudo tail -f /var/log/vps-proxy.log
 
-# SSH连接日志
-grep "sshd" /var/log/auth.log | tail -20
+# 查看系统认证日志
+sudo tail -f /var/log/auth.log
 
-# 防火墙日志
-grep "UFW" /var/log/syslog | tail -20
-
-# fail2ban日志
-tail -f /var/log/fail2ban.log
+# 查看防火墙日志
+sudo tail -f /var/log/ufw.log
 ```
 
-#### 性能监控
+### 诊断工具
 ```bash
-# 实时系统状态
-htop
+# SSH配置诊断
+sudo ./vps-security-hardening.sh --audit
 
-# 网络连接监控
-ss -tuln | grep :443
+# 代理服务诊断
+sudo ./vps-proxy-deployment.sh --status
 
-# 磁盘使用情况
+# 网络连通性测试
+ping -c 4 8.8.8.8
+curl -I https://www.google.com
+```
+
+## 🤝 技术支持
+
+### 获取帮助
+```bash
+# 查看帮助信息
+sudo ./vps-security-toolkit.sh --help
+sudo ./vps-security-hardening.sh --help
+sudo ./vps-proxy-deployment.sh --help
+
+# 查看版本信息
+sudo ./vps-security-toolkit.sh --version
+```
+
+### 问题报告
+在报告问题时，请提供以下信息：
+1. **操作系统版本**: `cat /etc/os-release`
+2. **脚本版本**: `./script.sh --version`
+3. **错误信息**: 完整的错误输出
+4. **日志文件**: 相关的日志内容
+5. **系统状态**: `./script.sh --status`
+
+### 常用诊断命令
+```bash
+# 系统信息收集
+uname -a
+cat /etc/os-release
 df -h
-
-# 内存使用详情
 free -h
+systemctl --failed
+
+# 网络状态检查
+ss -tuln
+iptables -L
+ufw status
 ```
 
-## 🔄 更新日志
+## 📚 扩展模块
 
-### v2.1.1 Enhanced (当前版本)
+项目支持可选的扩展模块，提供额外功能：
 
-#### 🆕 核心新特性
-- **三层代理部署架构**: 新手/高级/专家模式，满足不同用户需求
-- **智能配置系统**: 自动端口选择、目标网站优化、参数自适应
-- **增强故障诊断**: 5维度综合诊断、自动修复建议
-- **性能优化套件**: 网络参数调优、系统资源优化
-- **批量操作模式**: 多选任务、并行执行、进度监控
+### enhanced-logging.sh - 增强日志系统
+- 结构化JSON日志记录
+- 多级日志管理 (DEBUG/INFO/WARN/ERROR/CRITICAL)
+- 自动日志轮转和压缩
+- 错误上下文管理和自动恢复
+- 审计日志和操作追踪
 
-#### 🚀 代理部署增强
-- **一键智能部署**: 60秒内完成完整部署，零配置要求
-- **REALITY协议优化**: 最新安全特性、TLS指纹完美伪装
-- **多客户端支持**: JSON、分享链接、二维码、Clash配置
-- **SNI过滤防护**: 防止流量劫持，借鉴业界最佳实践
-- **IPv6双栈支持**: 完整双栈网络环境支持
+### secure-service-manager.sh - 安全服务管理
+- 安全的系统服务操作
+- 服务白名单验证和批量操作
+- 服务健康检查和依赖管理
+- 交互式服务管理界面
 
-#### 🛡️ 安全性提升
-- **云平台适配**: AWS/GCP/Azure/阿里云配置兼容性
-- **SSH配置诊断**: 自动检测和修复配置冲突
-- **智能密钥管理**: RSA/Ed25519自动选择和生成
-- **防火墙智能配置**: 根据服务自动配置防护规则
-- **入侵检测增强**: fail2ban多层防护、异常行为识别
-
-#### 🎯 用户体验优化
-- **可视化界面**: 实时状态显示、进度跟踪、彩色交互
-- **智能向导**: 步骤式引导、智能建议、错误预防
-- **配置验证**: 实时语法检查、兼容性验证
-- **自动备份**: 操作前自动备份、一键回滚
-- **文档集成**: 内置帮助、使用示例、最佳实践
-
-#### 🔧 技术架构改进
-- **模块化设计**: 功能独立、易于维护和扩展
-- **错误处理**: 全面错误捕获、智能恢复机制
-- **日志系统**: 结构化日志、多级别记录
-- **配置管理**: 版本控制、模板系统、批量操作
-- **性能监控**: 实时监控、历史分析、告警机制
-
-### v2.1.0
-- **服务管理模块**: 完整的服务生命周期管理
-- **系统清理功能**: 自动清理和优化
-- **配置管理系统**: 备份、恢复、版本控制
-- **测试工具集成**: 连接、性能、安全测试
-- **用户体验提升**: 界面优化、操作简化
-
-### v2.0.0
-- **架构重构**: 集成安全加固和代理部署
-- **VLESS-REALITY**: 新协议支持和优化
-- **一键部署**: 自动化部署流程
-- **错误处理**: 完善的异常处理机制
-
-## 🤝 贡献指南
-
-### 参与贡献
-我们欢迎各种形式的贡献，包括但不限于：
-- **Bug报告**: 发现问题，提交详细的issue
-- **功能建议**: 提出新功能想法和改进建议
-- **代码贡献**: 提交pull request改进代码
-- **文档改进**: 完善文档、教程、示例
-- **测试反馈**: 在不同环境下测试并反馈结果
-
-### 开发规范
-- **代码风格**: 遵循项目代码规范和最佳实践
-- **安全优先**: 所有贡献必须符合安全标准
-- **测试要求**: 新功能需要包含相应测试
-- **文档更新**: 代码变更需要同步更新文档
-
-### 社区交流
-- **GitHub Issues**: 问题报告和功能讨论
-- **Pull Requests**: 代码贡献和review
-- **Discussions**: 技术交流和使用心得
+### security-fixes.sh - 安全修复补丁
+- 安全漏洞修复工具
+- 文件权限安全修复
+- 输入验证和清理增强
+- 下载文件完整性验证
 
 ## 📄 许可证
 
@@ -568,7 +370,7 @@ free -h
 
 ## ⚠️ 免责声明
 
-### 使用说明
+### 使用条款
 1. **合法使用**: 本工具仅供学习、研究和合法用途使用
 2. **法律遵守**: 使用者需遵守当地法律法规和相关政策
 3. **风险承担**: 使用本工具产生的任何后果由使用者自行承担
@@ -580,31 +382,22 @@ free -h
 3. **权限控制**: 谨慎使用root权限，避免安全风险
 4. **定期更新**: 建议定期更新工具和系统补丁
 
-## 🙏 致谢与参考
+## 🙏 致谢
 
-### 开源项目致谢
-- **[XTLS/Xray-core](https://github.com/XTLS/Xray-core)**: 高性能代理核心，REALITY协议支持
-- **[oldfriendme/xrayREALITY](https://github.com/oldfriendme/xrayREALITY)**: 安全优先设计理念，SNI过滤实现
-- **[yirenchengfeng1/xray_warp.sh](https://github.com/yirenchengfeng1/linux)**: 用户体验设计，WARP集成方案
-- **[233boy/sing-box](https://github.com/233boy/sing-box)**: 操作效率优化，一命令操作设计
+### 开源项目
+- **[XTLS/Xray-core](https://github.com/XTLS/Xray-core)**: 高性能代理核心
+- **[fail2ban](https://github.com/fail2ban/fail2ban)**: 入侵防护系统
+- **[UFW](https://wiki.ubuntu.com/UncomplicatedFirewall)**: 简化防火墙管理
 
 ### 技术参考
 - **Linux Security Best Practices**: 系统安全加固标准
 - **REALITY Protocol Documentation**: 协议实现技术细节
-- **Network Performance Optimization**: 网络性能优化技术
 - **Modern DevOps Practices**: 现代运维最佳实践
-
-### 设计灵感
-本项目融合了多个优秀开源项目的设计理念：
-- **安全意识**: 来自oldfriendme项目的安全优先思想
-- **用户体验**: 借鉴yirenchengfeng1项目的界面设计
-- **操作效率**: 学习233boy项目的简化操作理念
-- **创新技术**: 集成最新的REALITY协议和智能化特性
 
 ---
 
-**🎯 项目目标**: 打造最专业、最易用、最安全的VPS安全加固与代理部署工具
+**🎯 项目目标**: 提供最专业、最易用、最安全的VPS管理工具
 
-**📞 技术支持**: 如有问题，请通过GitHub Issues联系我们
+**📧 技术支持**: 如有问题，请通过GitHub Issues联系我们
 
 **⭐ 支持项目**: 如果这个项目对您有帮助，请给我们一个Star！
