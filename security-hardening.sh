@@ -8412,34 +8412,6 @@ quick_tools_menu() {
 #endregion
 
 #region //主程序入口
-# 主函数
-main() {
-    # 复制脚本到系统路径
-    copy_script_to_system
-
-    # 检查授权
-    authorization_check
-    authorization_false
-
-    # 权限检查
-    root_check
-
-    # 创建必要目录
-    mkdir -p "$config_dir" "$backup_dir"
-
-    # 环境检查
-    check_system_compatibility
-    check_network_environment
-
-    # 系统环境检测
-    detect_system_environment
-
-    # 设置快捷指令
-    setup_shortcut
-
-    # 启动主菜单
-    main_menu
-}
 
 # 显示系统信息
 show_system_info() {
@@ -8563,32 +8535,554 @@ security_hardening_menu() {
 proxy_deployment_menu() {
     while true; do
         clear
-        echo -e "${pink}代理部署模块${white}"
+        echo -e "${pink}代理部署模块 - VLESS-REALITY${white}"
         echo "================================"
-        echo "1. Xray-core安装"
-        echo "2. VLESS-HTTP2-REALITY配置"
-        echo "3. 客户端配置生成"
-        echo "4. 服务管理"
-        echo "5. 网络质量检测"
-        echo "6. 性能优化"
+        echo "📊 当前状态:"
+        check_proxy_deployment_status
+        echo "================================"
+        echo "🚀 快速操作:"
+        echo "1. 一键部署代理"
+        echo "2. 自定义部署代理"
+        echo "================================"
+        echo "🔧 高级操作:"
+        echo "3. Xray-core安装/更新"
+        echo "4. VLESS-REALITY配置"
+        echo "5. 客户端配置生成"
+        echo "6. 服务管理"
+        echo "7. 网络质量检测"
+        echo "8. 性能优化"
+        echo "9. 故障诊断"
         echo "================================"
         echo "0. 返回主菜单"
         echo "================================"
 
         local choice
-        prompt_for_input "请选择操作 [0-6]: " choice validate_numeric_range 0 6
+        prompt_for_input "请选择操作 [0-9]: " choice validate_numeric_range 0 9
 
         case $choice in
-            1) install_xray_core ;;
-            2) configure_vless_reality ;;
-            3) generate_client_configs ;;
-            4) proxy_service_management ;;
-            5) test_network_quality ;;
-            6) echo "性能优化功能开发中..."; break_end ;;
+            1) one_click_proxy_deploy ;;
+            2) custom_proxy_deploy ;;
+            3) install_xray_core ;;
+            4) configure_vless_reality ;;
+            5) generate_client_configs ;;
+            6) proxy_service_management ;;
+            7) test_network_quality ;;
+            8) proxy_performance_optimization ;;
+            9) proxy_troubleshooting ;;
             0) break ;;
         esac
     done
 }
+
+#region //增强代理部署功能
+
+# 检查代理部署状态
+check_proxy_deployment_status() {
+    local xray_installed=false
+    local xray_configured=false
+    local xray_running=false
+    
+    # 检查Xray安装状态
+    if [[ -f "/usr/local/bin/xray" ]]; then
+        xray_installed=true
+        echo -e "  Xray安装: ${green}✓ 已安装${white}"
+        echo "  版本: $(/usr/local/bin/xray version | head -1 | awk '{print $2}' 2>/dev/null || echo '未知')"
+    else
+        echo -e "  Xray安装: ${red}✗ 未安装${white}"
+    fi
+    
+    # 检查配置状态
+    if [[ -f "$XRAY_CONFIG_FILE" ]]; then
+        xray_configured=true
+        echo -e "  配置文件: ${green}✓ 已配置${white}"
+    else
+        echo -e "  配置文件: ${red}✗ 未配置${white}"
+    fi
+    
+    # 检查服务状态
+    if [[ -f "$XRAY_SERVICE_FILE" ]]; then
+        local service_status=$(systemctl is-active xray 2>/dev/null || echo "inactive")
+        if [[ "$service_status" == "active" ]]; then
+            xray_running=true
+            echo -e "  服务状态: ${green}✓ 运行中${white}"
+        else
+            echo -e "  服务状态: ${red}✗ 未运行${white}"
+        fi
+    else
+        echo -e "  服务状态: ${red}✗ 未创建${white}"
+    fi
+    
+    # 检查端口状态
+    if [[ -f "$config_dir/proxy_config.conf" ]]; then
+        source "$config_dir/proxy_config.conf" 2>/dev/null
+        if [[ -n "$LISTEN_PORT" ]]; then
+            if ss -tuln | grep -q ":$LISTEN_PORT "; then
+                echo -e "  端口状态: ${green}✓ $LISTEN_PORT 已监听${white}"
+            else
+                echo -e "  端口状态: ${yellow}⚠ $LISTEN_PORT 未监听${white}"
+            fi
+        fi
+    fi
+    
+    # 综合状态评估
+    if [[ "$xray_installed" == true && "$xray_configured" == true && "$xray_running" == true ]]; then
+        echo -e "  总体状态: ${green}✓ 完全就绪${white}"
+    elif [[ "$xray_installed" == true && "$xray_configured" == true ]]; then
+        echo -e "  总体状态: ${yellow}⚠ 需要启动服务${white}"
+    elif [[ "$xray_installed" == true ]]; then
+        echo -e "  总体状态: ${yellow}⚠ 需要配置${white}"
+    else
+        echo -e "  总体状态: ${red}✗ 未部署${white}"
+    fi
+}
+
+# 一键代理部署
+one_click_proxy_deploy() {
+    clear
+    echo -e "${pink}一键代理部署 - VLESS-REALITY${white}"
+    echo "================================"
+    echo "此功能将自动完成以下操作："
+    echo "1. 系统环境检测"
+    echo "2. Xray-core自动安装"
+    echo "3. 智能端口选择"
+    echo "4. 最佳目标网站选择"
+    echo "5. REALITY配置生成"
+    echo "6. 服务启动"
+    echo "7. 客户端配置生成"
+    echo "================================"
+    echo -e "${green}推荐配置：端口443，目标网站microsoft.com${white}"
+    echo ""
+    
+    if ! confirm_operation "开始一键部署"; then
+        info_msg "操作已取消"
+        return
+    fi
+    
+    # 执行部署步骤
+    execute_one_click_proxy_deploy
+}
+
+# 自定义代理部署
+custom_proxy_deploy() {
+    clear
+    echo -e "${pink}自定义代理部署${white}"
+    echo "================================"
+    echo "此模式允许您自定义所有配置参数："
+    echo ""
+    
+    # 收集用户配置
+    collect_custom_config
+    
+    if ! confirm_operation "开始自定义部署"; then
+        info_msg "操作已取消"
+        return
+    fi
+    
+    # 执行自定义部署
+    execute_custom_proxy_deploy
+}
+
+# 代理性能优化
+proxy_performance_optimization() {
+    clear
+    echo -e "${pink}代理性能优化${white}"
+    echo "================================"
+    
+    if [[ ! -f "$XRAY_CONFIG_FILE" ]]; then
+        error_msg "未检测到代理配置，请先部署代理"
+        break_end
+        return
+    fi
+    
+    echo "可用的优化选项："
+    echo "1. 网络参数调优"
+    echo "2. Xray配置优化"
+    echo "3. 系统资源优化"
+    echo "4. 全部优化"
+    echo "0. 返回"
+    echo ""
+    
+    local choice
+    prompt_for_input "请选择优化项目 [0-4]: " choice validate_numeric_range 0 4
+    
+    case $choice in
+        1) optimize_network_parameters ;;
+        2) optimize_xray_config ;;
+        3) optimize_system_resources ;;
+        4) 
+            optimize_network_parameters
+            optimize_xray_config
+            optimize_system_resources
+            ;;
+        0) return ;;
+    esac
+    
+    break_end
+}
+
+# 代理故障诊断
+proxy_troubleshooting() {
+    clear
+    echo -e "${pink}代理故障诊断${white}"
+    echo "================================"
+    
+    echo "正在进行故障诊断..."
+    echo ""
+    
+    # 基础检查
+    echo -e "${cyan}1. 基础组件检查:${white}"
+    diagnose_basic_components
+    echo ""
+    
+    # 网络检查
+    echo -e "${cyan}2. 网络连接检查:${white}"
+    diagnose_network_connectivity
+    echo ""
+    
+    # 服务检查
+    echo -e "${cyan}3. 服务状态检查:${white}"
+    diagnose_service_status
+    echo ""
+    
+    # 配置检查
+    echo -e "${cyan}4. 配置文件检查:${white}"
+    diagnose_configuration
+    echo ""
+    
+    # 端口检查
+    echo -e "${cyan}5. 端口状态检查:${white}"
+    diagnose_port_status
+    echo ""
+    
+    # 生成诊断报告
+    generate_diagnostic_report
+    
+    break_end
+}
+
+#endregion
+
+#region //智能化代理部署支持函数
+
+# 预部署检查
+pre_deployment_check() {
+    echo -e "${cyan}正在进行预部署检查...${white}"
+    
+    # 系统兼容性检查
+    if ! check_system_compatibility; then
+        error_msg "系统兼容性检查失败"
+        return 1
+    fi
+    
+    # 网络连接检查
+    if ! check_network_environment; then
+        error_msg "网络环境检查失败"
+        return 1
+    fi
+    
+    # 端口可用性检查
+    if ! check_port_availability; then
+        error_msg "端口可用性检查失败"
+        return 1
+    fi
+    
+    return 0
+}
+
+# 检查端口可用性
+check_port_availability() {
+    local ports=(443 8443 2053 2083 2087 2096)
+    
+    for port in "${ports[@]}"; do
+        if ! ss -tuln | grep -q ":$port "; then
+            echo "找到可用端口: $port"
+            return 0
+        fi
+    done
+    
+    warn_msg "常用端口都被占用，将使用随机端口"
+    return 0
+}
+
+# 静默安装Xray-core
+install_xray_core_silent() {
+    local arch=$(detect_architecture)
+    local version=$(get_latest_xray_version)
+    
+    # 创建目录
+    create_xray_directories >/dev/null 2>&1
+    
+    # 下载安装
+    if download_xray "$version" "$arch" >/dev/null 2>&1; then
+        create_xray_service >/dev/null 2>&1
+        chown -R nobody:nogroup "$XRAY_CONFIG_DIR" >/dev/null 2>&1
+        chown -R nobody:nogroup "/var/log/xray" >/dev/null 2>&1
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 生成智能配置
+generate_smart_config() {
+    # 智能端口选择
+    local smart_port="443"
+    if ss -tuln | grep -q ":443 "; then
+        smart_port="8443"
+        if ss -tuln | grep -q ":8443 "; then
+            smart_port=$(shuf -i 10000-65000 -n 1)
+        fi
+    fi
+    
+    # 智能目标网站选择
+    local target_sites=("microsoft.com" "apple.com" "cloudflare.com" "github.com")
+    local smart_target=""
+    
+    for site in "${target_sites[@]}"; do
+        if curl -s --connect-timeout 3 "https://$site" >/dev/null 2>&1; then
+            smart_target="$site"
+            break
+        fi
+    done
+    
+    # 默认选择
+    smart_target="${smart_target:-microsoft.com}"
+    
+    # 保存智能配置
+    mkdir -p "$config_dir"
+    cat > "$config_dir/smart_proxy_config.conf" << EOF
+SMART_PORT="$smart_port"
+SMART_TARGET="$smart_target"
+SMART_UUID="$(generate_uuid)"
+SMART_FLOW="xtls-rprx-vision"
+DEPLOY_MODE="smart"
+DEPLOY_TIME="$(date)"
+EOF
+    
+    return 0
+}
+
+# 自动配置VLESS-REALITY
+configure_vless_reality_auto() {
+    source "$config_dir/smart_proxy_config.conf"
+    
+    # 生成密钥对
+    local keys=$(generate_x25519_keypair)
+    local private_key=$(echo "$keys" | head -1)
+    local public_key=$(echo "$keys" | tail -1)
+    
+    # 生成配置文件
+    cat > "$XRAY_CONFIG_FILE" << EOF
+{
+    "log": {
+        "access": "/var/log/xray/access.log",
+        "error": "/var/log/xray/error.log",
+        "loglevel": "warning"
+    },
+    "inbounds": [
+        {
+            "port": $SMART_PORT,
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "id": "$SMART_UUID",
+                        "flow": "$SMART_FLOW"
+                    }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "show": false,
+                    "dest": "$SMART_TARGET:443",
+                    "xver": 0,
+                    "serverNames": ["$SMART_TARGET"],
+                    "privateKey": "$private_key",
+                    "shortIds": ["$(generate_short_id)"]
+                }
+            },
+            "sniffing": {
+                "enabled": true,
+                "destOverride": ["http", "tls"]
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "freedom",
+            "settings": {},
+            "tag": "direct"
+        },
+        {
+            "protocol": "blackhole",
+            "settings": {},
+            "tag": "blocked"
+        }
+    ],
+    "routing": {
+        "rules": [
+            {
+                "type": "field",
+                "protocol": ["bittorrent"],
+                "outboundTag": "blocked"
+            }
+        ]
+    }
+}
+EOF
+
+    # 保存配置信息
+    cat > "$config_dir/proxy_config.conf" << EOF
+LISTEN_PORT="$SMART_PORT"
+USER_UUID="$SMART_UUID"
+PUBLIC_KEY="$public_key"
+PRIVATE_KEY="$private_key"
+TARGET_WEBSITE="$SMART_TARGET"
+FLOW_TYPE="$SMART_FLOW"
+CONFIG_TYPE="vless-reality-auto"
+CREATED_TIME="$(date)"
+EOF
+
+    return 0
+}
+
+# 启动Xray服务
+start_xray_service() {
+    if systemctl enable xray >/dev/null 2>&1 && systemctl start xray >/dev/null 2>&1; then
+        sleep 2
+        if systemctl is-active xray >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# 自动生成客户端配置
+generate_client_configs_auto() {
+    source "$config_dir/proxy_config.conf"
+    
+    local server_ip=$(get_server_ip)
+    local client_config_dir="$config_dir/clients"
+    
+    mkdir -p "$client_config_dir"
+    
+    # 生成VLESS链接
+    local vless_link="vless://${USER_UUID}@${server_ip}:${LISTEN_PORT}?encryption=none&flow=${FLOW_TYPE}&security=reality&sni=${TARGET_WEBSITE}&fp=chrome&pbk=${PUBLIC_KEY}&type=tcp&headerType=none#VLESS-REALITY-$(date +%Y%m%d)"
+    
+    echo "$vless_link" > "$client_config_dir/vless_link.txt"
+    
+    # 生成客户端JSON配置
+    cat > "$client_config_dir/client_config.json" << EOF
+{
+    "log": {
+        "loglevel": "warning"
+    },
+    "inbounds": [
+        {
+            "port": 10808,
+            "protocol": "socks",
+            "settings": {
+                "udp": true
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "$server_ip",
+                        "port": $LISTEN_PORT,
+                        "users": [
+                            {
+                                "id": "$USER_UUID",
+                                "encryption": "none",
+                                "flow": "$FLOW_TYPE"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "serverName": "$TARGET_WEBSITE",
+                    "fingerprint": "chrome",
+                    "publicKey": "$PUBLIC_KEY"
+                }
+            }
+        }
+    ]
+}
+EOF
+
+    return 0
+}
+
+# 部署验证
+verify_deployment() {
+    # 检查服务状态
+    if ! systemctl is-active xray >/dev/null 2>&1; then
+        error_msg "Xray服务未运行"
+        return 1
+    fi
+    
+    # 检查端口监听
+    source "$config_dir/proxy_config.conf"
+    if ! ss -tuln | grep -q ":$LISTEN_PORT "; then
+        error_msg "端口 $LISTEN_PORT 未监听"
+        return 1
+    fi
+    
+    # 检查配置文件
+    if ! /usr/local/bin/xray test -config "$XRAY_CONFIG_FILE" >/dev/null 2>&1; then
+        error_msg "配置文件验证失败"
+        return 1
+    fi
+    
+    return 0
+}
+
+# 显示部署结果
+show_deployment_result() {
+    echo -e "${green}🎉 代理部署成功！${white}"
+    echo "================================"
+    
+    source "$config_dir/proxy_config.conf"
+    local server_ip=$(get_server_ip)
+    
+    echo -e "${cyan}服务器信息:${white}"
+    echo "  地址: $server_ip"
+    echo "  端口: $LISTEN_PORT"
+    echo "  协议: VLESS-REALITY"
+    echo "  目标网站: $TARGET_WEBSITE"
+    echo ""
+    
+    echo -e "${cyan}客户端配置:${white}"
+    if [[ -f "$config_dir/clients/vless_link.txt" ]]; then
+        echo "  分享链接: $config_dir/clients/vless_link.txt"
+        echo "  JSON配置: $config_dir/clients/client_config.json"
+    fi
+    echo ""
+    
+    echo -e "${cyan}管理命令:${white}"
+    echo "  查看状态: systemctl status xray"
+    echo "  重启服务: systemctl restart xray"
+    echo "  查看日志: journalctl -u xray -f"
+    echo ""
+    
+    echo -e "${yellow}安全提醒:${white}"
+    echo "  • 请妥善保管客户端配置文件"
+    echo "  • 定期检查服务运行状态"
+    echo "  • 避免在不安全网络环境下传输配置"
+}
+
+#endregion
 
 # 启动所有服务
 start_all_services() {
@@ -8654,528 +9148,6 @@ start_all_services() {
     echo ""
     success_msg "服务启动操作完成，共成功启动 $started_count 个服务。"
     break_end
-}
-
-# 主菜单
-main_menu() {
-    while true; do
-        clear
-        echo -e "${pink}Linux服务器安全加固与管理脚本 ${white}(v1.0.0)"
-        echo "=================================================="
-        echo -e "系统: ${green}$OS $DIST${white} | IP: ${green}${IPV4_ADDRESS:-N/A}${white}"
-        echo "=================================================="
-        echo "1. 🛡️  安全加固"
-        echo "2. 🚀  代理部署"
-        echo "3. 🛠️  快速工具"
-        echo "4. ℹ️  系统信息"
-        echo "5. 🔄  启动所有服务"
-        echo "6. 🔄  重启所有服务"
-        echo "7. 🛑  停止所有服务"
-        echo "8. 卸载脚本"
-        echo "=================================================="
-        echo "0. 退出脚本"
-        echo "=================================================="
-
-        local choice
-        prompt_for_input "请选择操作 [0-8]: " choice validate_numeric_range 0 8
-
-        case $choice in
-            1) security_hardening_menu ;;
-            2) proxy_deployment_menu ;;
-            3) quick_tools_menu ;;
-            4) show_system_info; break_end ;;
-            5) start_all_services ;;
-            6) echo "重启所有服务功能开发中..."; break_end ;;
-            7) echo "停止所有服务功能开发中..."; break_end ;;
-            8) uninstall_script ;;
-            0)
-                clear
-                echo "感谢使用！"
-                exit 0
-                ;;
-        esac
-    done
-}
-
-# 程序入口
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-fi
-
-# 停止所有服务
-stop_all_services() {
-    clear
-    echo -e "${pink}停止所有服务${white}"
-    echo "================================"
-
-    echo -e "${red}警告：停止服务可能会影响系统安全和代理功能${white}"
-    if ! confirm_operation "停止所有服务"; then
-        info_msg "操作已取消"
-        return
-    fi
-
-    local services=("xray" "fail2ban")
-    local stopped_count=0
-
-    for service in "${services[@]}"; do
-        echo -e "${cyan}正在停止 $service 服务...${white}"
-
-        case $service in
-            xray)
-                if [[ -f "$XRAY_SERVICE_FILE" ]]; then
-                    if manage_service stop xray 2>/dev/null; then
-                        success_msg "$service 服务停止成功"
-                        ((stopped_count++))
-                    else
-                        warn_msg "$service 服务停止失败"
-                    fi
-                else
-                    warn_msg "$service 服务未安装"
-                fi
-                ;;
-            fail2ban)
-                if command_exists fail2ban-client; then
-                    if manage_service stop fail2ban 2>/dev/null; then
-                        success_msg "$service 服务停止成功"
-                        ((stopped_count++))
-                    else
-                        warn_msg "$service 服务停止失败"
-                    fi
-                else
-                    warn_msg "$service 服务未安装"
-                fi
-                ;;
-        esac
-        sleep 1
-    done
-
-    echo ""
-    echo -e "${yellow}服务停止完成！成功停止 $stopped_count 个服务${white}"
-    echo -e "${red}注意：SSH服务未停止以保持连接${white}"
-    break_end
-}
-
-# 重启所有服务
-restart_all_services() {
-    clear
-    echo -e "${pink}重启所有服务${white}"
-    echo "================================"
-
-    local services=("ssh" "xray" "fail2ban")
-    local restarted_count=0
-
-    for service in "${services[@]}"; do
-        echo -e "${cyan}正在重启 $service 服务...${white}"
-
-        case $service in
-            ssh)
-                if sshd -t 2>/dev/null; then
-                    if manage_service restart sshd 2>/dev/null || manage_service restart ssh 2>/dev/null; then
-                        success_msg "$service 服务重启成功"
-                        ((restarted_count++))
-                    else
-                        warn_msg "$service 服务重启失败"
-                    fi
-                else
-                    warn_msg "$service 配置文件有误，跳过重启"
-                fi
-                ;;
-            xray)
-                if [[ -f "$XRAY_SERVICE_FILE" ]]; then
-                    if [[ -f "$XRAY_CONFIG_FILE" ]] && [[ -f "$XRAY_BINARY" ]] && "$XRAY_BINARY" test -c "$XRAY_CONFIG_FILE" 2>/dev/null; then
-                        if manage_service restart xray 2>/dev/null; then
-                            success_msg "$service 服务重启成功"
-                            ((restarted_count++))
-                        else
-                            warn_msg "$service 服务重启失败"
-                        fi
-                    else
-                        warn_msg "$service 配置文件有误，跳过重启"
-                    fi
-                else
-                    warn_msg "$service 服务未安装"
-                fi
-                ;;
-            fail2ban)
-                if command_exists fail2ban-client; then
-                    if manage_service restart fail2ban 2>/dev/null; then
-                        success_msg "$service 服务重启成功"
-                        ((restarted_count++))
-                    else
-                        warn_msg "$service 服务重启失败"
-                    fi
-                else
-                    warn_msg "$service 服务未安装"
-                fi
-                ;;
-        esac
-        sleep 1
-    done
-
-    echo ""
-    echo -e "${green}服务重启完成！成功重启 $restarted_count 个服务${white}"
-    break_end
-}
-
-# 查看所有服务状态
-show_all_services_status() {
-    clear
-    echo -e "${pink}系统服务状态${white}"
-    echo "================================"
-
-    # SSH服务状态
-    echo -e "${cyan}SSH服务状态:${white}"
-    local ssh_status=$(get_ssh_service_status)
-    local ssh_port=$(get_ssh_config_value "port" "22")
-    echo "  状态: $ssh_status"
-    echo "  端口: $ssh_port"
-    echo "  配置: $SSH_CONFIG"
-    echo ""
-
-    # Xray服务状态
-    echo -e "${cyan}Xray服务状态:${white}"
-    if [[ -f "$XRAY_SERVICE_FILE" ]]; then
-        local xray_status=$(systemctl is-active xray 2>/dev/null || echo "inactive")
-        echo "  状态: $xray_status"
-        if [[ -f "$config_dir/proxy_config.conf" ]]; then
-            . "$config_dir/proxy_config.conf"
-            echo "  端口: $LISTEN_PORT"
-            echo "  协议: VLESS-HTTP2-REALITY"
-        fi
-        echo "  配置: $XRAY_CONFIG_FILE"
-    else
-        echo "  状态: 未安装"
-    fi
-    echo ""
-
-    # fail2ban状态
-    echo -e "${cyan}fail2ban状态:${white}"
-    if command_exists fail2ban-client; then
-        local f2b_status=$(systemctl is-active fail2ban 2>/dev/null || echo "inactive")
-        echo "  状态: $f2b_status"
-        if [[ "$f2b_status" == "active" ]]; then
-            local banned_count=$(fail2ban-client status sshd 2>/dev/null | grep "Currently banned" | awk '{print $4}' || echo "0")
-            echo "  已封禁IP数: $banned_count"
-        fi
-    else
-        echo "  状态: 未安装"
-    fi
-    echo ""
-
-    # 防火墙状态
-    echo -e "${cyan}防火墙状态:${white}"
-    if command_exists ufw; then
-        local ufw_status=$(ufw status | head -1 | awk '{print $2}')
-        echo "  UFW状态: $ufw_status"
-    fi
-    if command_exists iptables; then
-        local iptables_rules=$(iptables -L INPUT | wc -l)
-        echo "  iptables规则数: $((iptables_rules - 2))"
-    fi
-    echo ""
-
-    break_end
-}
-
-# 查看服务日志
-show_services_logs() {
-    while true; do
-        clear
-        echo -e "${pink}服务日志查看${white}"
-        echo "================================"
-        echo "1. SSH服务日志"
-        echo "2. Xray服务日志"
-        echo "3. fail2ban日志"
-        echo "4. 系统日志"
-        echo "5. 防火墙日志"
-        echo "================================"
-        echo "0. 返回上级菜单"
-        echo "================================"
-
-        local choice
-        prompt_for_input "请选择要查看的日志 [0-5]: " choice validate_numeric_range 0 5
-
-        case $choice in
-            1)
-                echo -e "${cyan}SSH服务日志 (最近50条):${white}"
-                journalctl -u sshd -u ssh -n 50 --no-pager 2>/dev/null || echo "无法获取SSH日志"
-                break_end
-                ;;
-            2)
-                if [[ -f "$XRAY_SERVICE_FILE" ]]; then
-                    echo -e "${cyan}Xray服务日志 (最近50条):${white}"
-                    journalctl -u xray -n 50 --no-pager 2>/dev/null || echo "无法获取Xray日志"
-                else
-                    echo "Xray服务未安装"
-                fi
-                break_end
-                ;;
-            3)
-                if command_exists fail2ban-client; then
-                    echo -e "${cyan}fail2ban日志 (最近50条):${white}"
-                    tail -50 /var/log/fail2ban.log 2>/dev/null || echo "无法获取fail2ban日志"
-                else
-                    echo "fail2ban未安装"
-                fi
-                break_end
-                ;;
-            4)
-                echo -e "${cyan}系统日志 (最近30条):${white}"
-                journalctl -n 30 --no-pager 2>/dev/null || echo "无法获取系统日志"
-                break_end
-                ;;
-            5)
-                echo -e "${cyan}防火墙日志 (最近20条):${white}"
-                if [[ -f /var/log/ufw.log ]]; then
-                    tail -20 /var/log/ufw.log
-                else
-                    dmesg | grep -i "iptables\|firewall" | tail -20 || echo "无防火墙日志"
-                fi
-                break_end
-                ;;
-            0) break ;;
-        esac
-    done
-}
-
-# 系统健康检查
-system_health_check() {
-    clear
-    echo -e "${pink}系统健康检查${white}"
-    echo "================================"
-
-    local issues=0
-    local warnings=0
-
-    echo -e "${cyan}正在检查系统健康状况...${white}"
-    echo ""
-
-    # 检查服务状态
-    echo -e "${yellow}1. 服务状态检查${white}"
-
-    # SSH服务检查
-    if systemctl is-active sshd >/dev/null 2>&1 || systemctl is-active ssh >/dev/null 2>&1; then
-        echo "  ✓ SSH服务运行正常"
-    else
-        echo "  ✗ SSH服务未运行"
-        ((issues++))
-    fi
-
-    # Xray服务检查
-    if [[ -f "$XRAY_SERVICE_FILE" ]]; then
-        if systemctl is-active xray >/dev/null 2>&1; then
-            echo "  ✓ Xray服务运行正常"
-        else
-            echo "  ✗ Xray服务未运行"
-            ((issues++))
-        fi
-    else
-        echo "  - Xray服务未安装"
-    fi
-
-    # fail2ban检查
-    if command_exists fail2ban-client; then
-        if systemctl is-active fail2ban >/dev/null 2>&1; then
-            echo "  ✓ fail2ban服务运行正常"
-        else
-            echo "  ✗ fail2ban服务未运行"
-            ((issues++))
-        fi
-    else
-        echo "  - fail2ban未安装"
-    fi
-
-    echo ""
-
-    # 检查配置文件
-    echo -e "${yellow}2. 配置文件检查${white}"
-
-    # SSH配置检查
-    if sshd -t 2>/dev/null; then
-        echo "  ✓ SSH配置文件语法正确"
-    else
-        echo "  ✗ SSH配置文件有语法错误"
-        ((issues++))
-    fi
-
-    # Xray配置检查
-    if [[ -f "$XRAY_CONFIG_FILE" ]]; then
-        if [[ -f "$XRAY_BINARY" ]] && "$XRAY_BINARY" test -c "$XRAY_CONFIG_FILE" 2>/dev/null; then
-            echo "  ✓ Xray配置文件语法正确"
-        else
-            echo "  ✗ Xray配置文件有语法错误"
-            ((issues++))
-        fi
-    else
-        echo "  - Xray配置文件不存在"
-    fi
-
-    echo ""
-
-    # 检查网络连接
-    echo -e "${yellow}3. 网络连接检查${white}"
-
-    if ping -c 1 8.8.8.8 >/dev/null 2>&1; then
-        echo "  ✓ 外网连接正常"
-    else
-        echo "  ✗ 外网连接异常"
-        ((issues++))
-    fi
-
-    if ping -c 1 127.0.0.1 >/dev/null 2>&1; then
-        echo "  ✓ 本地回环正常"
-    else
-        echo "  ✗ 本地回环异常"
-        ((issues++))
-    fi
-
-    echo ""
-
-    # 检查系统资源
-    echo -e "${yellow}4. 系统资源检查${white}"
-
-    # 内存使用率
-    local mem_usage=$(free | awk 'NR==2{printf "%.1f", $3*100/$2}')
-    if (( $(echo "$mem_usage > 90" | bc -l 2>/dev/null || echo 0) )); then
-        echo "  ⚠ 内存使用率过高: ${mem_usage}%"
-        ((warnings++))
-    else
-        echo "  ✓ 内存使用率正常: ${mem_usage}%"
-    fi
-
-    # 磁盘使用率
-    local disk_usage=$(df / | awk 'NR==2{print $5}' | sed 's/%//')
-    if [[ $disk_usage -gt 90 ]]; then
-        echo "  ⚠ 磁盘使用率过高: ${disk_usage}%"
-        ((warnings++))
-    else
-        echo "  ✓ 磁盘使用率正常: ${disk_usage}%"
-    fi
-
-    # CPU负载
-    local load_avg=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | sed 's/,//')
-    local cpu_cores=$(nproc)
-    if (( $(echo "$load_avg > $cpu_cores" | bc -l 2>/dev/null || echo 0) )); then
-        echo "  ⚠ CPU负载较高: $load_avg (核心数: $cpu_cores)"
-        ((warnings++))
-    else
-        echo "  ✓ CPU负载正常: $load_avg (核心数: $cpu_cores)"
-    fi
-
-    echo ""
-
-    # 检查安全状态
-    echo -e "${yellow}5. 安全状态检查${white}"
-
-    # 防火墙状态
-    if command_exists ufw; then
-        if ufw status | grep -q "Status: active"; then
-            echo "  ✓ UFW防火墙已启用"
-        else
-            echo "  ⚠ UFW防火墙未启用"
-            ((warnings++))
-        fi
-    fi
-
-    # SSH端口检查
-    local ssh_port=$(grep -E "^Port " "$SSH_CONFIG" | awk '{print $2}' 2>/dev/null || echo "22")
-    if [[ "$ssh_port" != "22" ]]; then
-        echo "  ✓ SSH端口已修改为非默认端口: $ssh_port"
-    else
-        echo "  ⚠ SSH仍使用默认端口22"
-        ((warnings++))
-    fi
-
-    # 密码认证检查
-    if grep -q "^PasswordAuthentication no" "$SSH_CONFIG"; then
-        echo "  ✓ SSH密码认证已禁用"
-    else
-        echo "  ⚠ SSH密码认证未禁用"
-        ((warnings++))
-    fi
-
-    echo ""
-    echo "================================"
-
-    # 显示检查结果
-    if [[ $issues -eq 0 && $warnings -eq 0 ]]; then
-        echo -e "${green}✓ 系统健康状况良好！${white}"
-    elif [[ $issues -eq 0 ]]; then
-        echo -e "${yellow}⚠ 系统基本正常，但有 $warnings 个警告项需要注意${white}"
-    else
-        echo -e "${red}✗ 发现 $issues 个严重问题和 $warnings 个警告项${white}"
-        echo -e "${red}建议立即处理严重问题${white}"
-    fi
-
-    echo ""
-    echo -e "${cyan}建议：${white}"
-    echo "1. 定期进行健康检查"
-    echo "2. 及时处理发现的问题"
-    echo "3. 保持系统和软件更新"
-    echo "4. 监控系统资源使用情况"
-
-    break_end
-}
-
-# 启动所有服务
-start_all_services() {
-    info_msg "正在启动所有相关服务..."
-    manage_service "start" "sshd"
-    manage_service "start" "fail2ban"
-    manage_service "start" "xray"
-    success_msg "服务启动完成"
-    break_end
-}
-
-# 停止所有服务
-stop_all_services() {
-    info_msg "正在停止所有相关服务..."
-    manage_service "stop" "xray"
-    manage_service "stop" "fail2ban"
-    manage_service "stop" "sshd"
-    success_msg "服务停止完成"
-    break_end
-}
-
-# 重启所有服务
-restart_all_services() {
-    info_msg "正在重启所有相关服务..."
-    manage_service "restart" "sshd"
-    manage_service "restart" "fail2ban"
-    manage_service "restart" "xray"
-    success_msg "服务重启完成"
-    break_end
-}
-
-# 服务管理子菜单
-service_management_menu() {
-    while true; do
-        clear
-        echo -e "${pink}服务管理模块${white}"
-        echo "================================"
-        echo "1. 启动所有服务"
-        echo "2. 停止所有服务"
-        echo "3. 重启所有服务"
-        echo "4. 查看服务状态"
-        echo "5. 查看服务日志"
-        echo "6. 系统健康检查"
-        echo "================================"
-        echo "0. 返回主菜单"
-        echo "================================"
-
-        local choice
-        prompt_for_input "请选择操作 [0-6]: " choice validate_numeric_range 0 6
-
-        case $choice in
-            1) start_all_services ;;
-            2) stop_all_services ;;
-            3) restart_all_services ;;
-            4) show_all_services_status ;;
-            5) show_services_logs ;;
-            6) system_health_check ;;
-            0) break ;;
-        esac
-    done
 }
 
 # 一键部署功能
@@ -9531,17 +9503,19 @@ show_system_status() {
 
 # 脚本主入口
 main() {
+    # 优先处理命令行参数
+    if [[ $# -gt 0 ]]; then
+        handle_command_line_args "$@"
+        return
+    fi
+    
     root_check
     copy_script_to_system
     authorization_check
     authorization_false
     detect_system_environment
     
-    if [[ $# -gt 0 ]]; then
-        handle_command_line_args "$@"
-    else
-        main_menu
-    fi
+    main_menu
 }
 
 # 脚本入口点
