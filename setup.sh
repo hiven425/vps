@@ -28,6 +28,7 @@ SHORT_ID=""
 NGINX_CONF_PATH="/etc/nginx/sites-available/default"
 XRAY_CONF_PATH="/usr/local/etc/xray/config.json"
 TEMP_DIR="/tmp/vless-setup"
+SCRIPT_VERSION="2.1.0"
 
 # Cleanup function
 cleanup() {
@@ -257,7 +258,7 @@ update_system() {
     export DEBIAN_FRONTEND=noninteractive
     apt update -y
     apt upgrade -y
-    apt install -y curl wget unzip sudo ufw
+    apt install -y curl wget unzip sudo ufw jq openssl socat cron
     
     # Mark as updated
     touch "/var/log/vless-setup-updated"
@@ -373,14 +374,9 @@ server {
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     
-    # Reality endpoint (hidden path)
-    location /api/v1/reality {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_redirect off;
+    # Block direct access to Reality (should not be accessible via HTTP)
+    location ~ ^/(reality|vless|trojan) {
+        return 404;
     }
     
     # gRPC endpoint
@@ -463,7 +459,7 @@ configure_xray() {
         "error": "/var/log/xray/error.log"
     },
     "routing": {
-        "domainStrategy": "IPIfNonMatch",
+        "domainStrategy": "UseIP",
         "rules": [
             {
                 "type": "field",
@@ -473,6 +469,17 @@ configure_xray() {
             {
                 "type": "field",
                 "ip": ["geoip:cn"],
+                "outboundTag": "blocked"
+            },
+            {
+                "type": "field",
+                "port": "443",
+                "network": "udp",
+                "outboundTag": "blocked"
+            },
+            {
+                "type": "field",
+                "protocol": ["bittorrent"],
                 "outboundTag": "blocked"
             }
         ]
@@ -528,13 +535,27 @@ configure_xray() {
     "outbounds": [
         {
             "protocol": "freedom",
-            "tag": "direct"
+            "tag": "direct",
+            "settings": {
+                "domainStrategy": "UseIP"
+            }
         },
         {
             "protocol": "blackhole",
             "tag": "blocked"
         }
-    ]
+    ],
+    "dns": {
+        "servers": [
+            "1.1.1.1",
+            "8.8.8.8",
+            "2606:4700:4700::1111",
+            "2001:4860:4860::8888"
+        ],
+        "queryStrategy": "UseIP",
+        "disableCache": false,
+        "disableFallback": false
+    }
 }
 EOF
     
@@ -816,8 +837,15 @@ change_uuid() {
     # Generate new UUID
     local new_uuid=$(cat /proc/sys/kernel/random/uuid)
     
-    # Update Xray config
-    sed -i "s/\"id\": \"$UUID\"/\"id\": \"$new_uuid\"/g" "$XRAY_CONF_PATH"
+    # Check if jq is available for safer JSON editing
+    if command -v jq &> /dev/null; then
+        # Use jq for safer JSON manipulation
+        local temp_file=$(mktemp)
+        jq --arg new_uuid "$new_uuid" '(.inbounds[].settings.clients[].id) = $new_uuid' "$XRAY_CONF_PATH" > "$temp_file" && mv "$temp_file" "$XRAY_CONF_PATH"
+    else
+        # Fallback to sed
+        sed -i "s/\"id\": \"$UUID\"/\"id\": \"$new_uuid\"/g" "$XRAY_CONF_PATH"
+    fi
     
     # Update saved config
     sed -i "s/UUID=\"$UUID\"/UUID=\"$new_uuid\"/" /root/.vless-config
@@ -833,6 +861,306 @@ change_uuid() {
     
     log_success "UUID 已更换为: $new_uuid"
     log_info "Xray 服务已重启，新的配置文件已生成"
+}
+
+# Change Reality keys
+change_reality_keys() {
+    log_info "更换 Reality 密钥对..."
+    
+    # Generate new key pair
+    local keypair=$(/usr/local/bin/xray x25519)
+    local new_private_key=$(echo "$keypair" | grep "Private key:" | cut -d' ' -f3)
+    local new_public_key=$(echo "$keypair" | grep "Public key:" | cut -d' ' -f3)
+    
+    # Update Xray config
+    if command -v jq &> /dev/null; then
+        local temp_file=$(mktemp)
+        jq --arg private_key "$new_private_key" '(.inbounds[0].streamSettings.realitySettings.privateKey) = $private_key' "$XRAY_CONF_PATH" > "$temp_file" && mv "$temp_file" "$XRAY_CONF_PATH"
+    else
+        sed -i "s/\"privateKey\": \"$PRIVATE_KEY\"/\"privateKey\": \"$new_private_key\"/" "$XRAY_CONF_PATH"
+    fi
+    
+    # Update saved config
+    sed -i "s/PRIVATE_KEY=\"$PRIVATE_KEY\"/PRIVATE_KEY=\"$new_private_key\"/" /root/.vless-config
+    sed -i "s/PUBLIC_KEY=\"$PUBLIC_KEY\"/PUBLIC_KEY=\"$new_public_key\"/" /root/.vless-config
+    
+    # Update global variables
+    PRIVATE_KEY="$new_private_key"
+    PUBLIC_KEY="$new_public_key"
+    
+    # Restart Xray
+    systemctl restart xray
+    
+    # Regenerate client configs
+    generate_client_config
+    
+    log_success "Reality 密钥对已更换"
+    log_info "新私钥: $new_private_key"
+    log_info "新公钥: $new_public_key"
+    log_info "Xray 服务已重启，新的配置文件已生成"
+}
+
+# Change mask domain
+change_mask_domain() {
+    log_info "更换伪装域名..."
+    
+    echo "当前伪装域名: $MASK_DOMAIN"
+    echo ""
+    echo "推荐伪装域名："
+    echo "  1. www.kcrw.com"
+    echo "  2. www.lovelive-anime.jp"
+    echo "  3. www.microsoft.com"
+    echo "  4. 自定义域名"
+    echo ""
+    
+    local new_mask_domain=""
+    while true; do
+        read -p "请选择伪装域名 [1-4]: " mask_choice
+        case $mask_choice in
+            1)
+                new_mask_domain="www.kcrw.com"
+                break
+                ;;
+            2)
+                new_mask_domain="www.lovelive-anime.jp"
+                break
+                ;;
+            3)
+                new_mask_domain="www.microsoft.com"
+                break
+                ;;
+            4)
+                while true; do
+                    read -p "请输入自定义伪装域名: " new_mask_domain
+                    if validate_domain "$new_mask_domain"; then
+                        if curl -I "https://$new_mask_domain" --connect-timeout 10 --max-time 15 &>/dev/null; then
+                            log_success "伪装域名 $new_mask_domain 可访问"
+                            break 2
+                        else
+                            log_warn "伪装域名 $new_mask_domain 无法访问，建议选择其他域名"
+                            read -p "是否继续使用此域名？(y/N): " continue_choice
+                            if [[ "$continue_choice" =~ ^[Yy]$ ]]; then
+                                break 2
+                            fi
+                        fi
+                    else
+                        log_error "域名格式无效"
+                    fi
+                done
+                ;;
+            *)
+                log_error "无效选择，请输入 1-4"
+                ;;
+        esac
+    done
+    
+    # Update Xray config
+    if command -v jq &> /dev/null; then
+        local temp_file=$(mktemp)
+        jq --arg mask_domain "$new_mask_domain" '(.inbounds[0].streamSettings.realitySettings.serverNames) = [$mask_domain]' "$XRAY_CONF_PATH" > "$temp_file" && mv "$temp_file" "$XRAY_CONF_PATH"
+    else
+        sed -i "s/\"serverNames\": \\[\"$MASK_DOMAIN\"\\]/\"serverNames\": [\"$new_mask_domain\"]/" "$XRAY_CONF_PATH"
+    fi
+    
+    # Update Nginx config
+    sed -i "s/$MASK_DOMAIN/$new_mask_domain/g" "$NGINX_CONF_PATH"
+    
+    # Update saved config
+    sed -i "s/MASK_DOMAIN=\"$MASK_DOMAIN\"/MASK_DOMAIN=\"$new_mask_domain\"/" /root/.vless-config
+    
+    # Update global variable
+    MASK_DOMAIN="$new_mask_domain"
+    
+    # Restart services
+    systemctl restart nginx xray
+    
+    # Regenerate client configs
+    generate_client_config
+    
+    log_success "伪装域名已更换为: $new_mask_domain"
+    log_info "Nginx 和 Xray 服务已重启，新的配置文件已生成"
+}
+
+# Run connection diagnostics
+run_connection_test() {
+    log_info "运行连接诊断..."
+    
+    echo ""
+    echo "╔════════════════════════════════════════════════════════════════╗"
+    echo "║                        连接诊断报告                              ║"
+    echo "╠════════════════════════════════════════════════════════════════╣"
+    
+    # Check services
+    echo "║ 服务状态检查:"
+    echo "║ - Nginx: $(systemctl is-active nginx) ($(systemctl is-enabled nginx))"
+    echo "║ - Xray: $(systemctl is-active xray) ($(systemctl is-enabled xray))"
+    
+    # Check ports
+    echo "║"
+    echo "║ 端口监听检查:"
+    if ss -tlnp | grep -q ":443"; then
+        echo "║ - 443/tcp: ✓ 正在监听"
+    else
+        echo "║ - 443/tcp: ✗ 未监听"
+    fi
+    
+    if ss -tlnp | grep -q "127.0.0.1:8080"; then
+        echo "║ - 8080/tcp (Reality): ✓ 正在监听"
+    else
+        echo "║ - 8080/tcp (Reality): ✗ 未监听"
+    fi
+    
+    if ss -tlnp | grep -q "127.0.0.1:8081"; then
+        echo "║ - 8081/tcp (gRPC): ✓ 正在监听"
+    else
+        echo "║ - 8081/tcp (gRPC): ✗ 未监听"
+    fi
+    
+    if ss -tlnp | grep -q "127.0.0.1:8003"; then
+        echo "║ - 8003/tcp (伪装): ✓ 正在监听"
+    else
+        echo "║ - 8003/tcp (伪装): ✗ 未监听"
+    fi
+    
+    # Check firewall
+    echo "║"
+    echo "║ 防火墙检查:"
+    local ufw_status=$(ufw status | head -n1 | cut -d' ' -f2)
+    echo "║ - UFW: $ufw_status"
+    if ufw status | grep -q "443"; then
+        echo "║ - 443端口: ✓ 已开放"
+    else
+        echo "║ - 443端口: ⚠ 可能未开放"
+    fi
+    
+    # Check SSL certificate
+    echo "║"
+    echo "║ SSL 证书检查:"
+    if [[ -f "/etc/ssl/private/${DOMAIN}.crt" ]]; then
+        local cert_expiry=$(openssl x509 -in "/etc/ssl/private/${DOMAIN}.crt" -noout -enddate | cut -d= -f2)
+        echo "║ - 证书文件: ✓ 存在"
+        echo "║ - 证书到期: $cert_expiry"
+    else
+        echo "║ - 证书文件: ✗ 不存在"
+    fi
+    
+    # Check DNS resolution
+    echo "║"
+    echo "║ DNS 解析检查:"
+    if nslookup "$DOMAIN" 1.1.1.1 &>/dev/null; then
+        echo "║ - 域名解析: ✓ 正常"
+    else
+        echo "║ - 域名解析: ✗ 失败"
+    fi
+    
+    if nslookup "$MASK_DOMAIN" 1.1.1.1 &>/dev/null; then
+        echo "║ - 伪装域名解析: ✓ 正常"
+    else
+        echo "║ - 伪装域名解析: ✗ 失败"
+    fi
+    
+    # Check time sync
+    echo "║"
+    echo "║ 时间同步检查:"
+    if systemctl is-active --quiet systemd-timesyncd; then
+        echo "║ - 时间同步服务: ✓ 运行中"
+    else
+        echo "║ - 时间同步服务: ⚠ 未运行"
+    fi
+    
+    # Check recent Xray logs for errors
+    echo "║"
+    echo "║ Xray 错误检查:"
+    local error_count=$(journalctl -u xray --since "1 hour ago" | grep -c "error\|ERROR\|fail\|FAIL" || echo "0")
+    if [[ "$error_count" -eq 0 ]]; then
+        echo "║ - 最近1小时错误: ✓ 无错误"
+    else
+        echo "║ - 最近1小时错误: ⚠ $error_count 个错误"
+        echo "║   建议查看详细日志: journalctl -u xray -f"
+    fi
+    
+    echo "╚════════════════════════════════════════════════════════════════╝"
+    echo ""
+    
+    # Provide recommendations
+    echo "诊断建议:"
+    if ! systemctl is-active --quiet nginx || ! systemctl is-active --quiet xray; then
+        echo "- 🔴 关键服务未运行，请检查服务状态和配置"
+    fi
+    
+    if ! ss -tlnp | grep -q ":443"; then
+        echo "- 🔴 443端口未监听，请检查 Nginx 配置"
+    fi
+    
+    if [[ ! -f "/etc/ssl/private/${DOMAIN}.crt" ]]; then
+        echo "- 🔴 SSL证书缺失，请重新申请证书"
+    fi
+    
+    if [[ "$error_count" -gt 0 ]]; then
+        echo "- 🟡 发现 Xray 错误，建议查看详细日志"
+    fi
+    
+    echo "- 📋 如需进一步诊断，请查看 Xray 实时日志"
+}
+
+# Uninstall Xray (enhanced)
+uninstall_xray() {
+    echo -e "${RED}警告: 这将完全删除 Xray、Nginx 配置和相关文件！${NC}"
+    echo "此操作不可逆，请确认："
+    echo "1. 停止所有服务"
+    echo "2. 删除 Xray 程序"
+    echo "3. 删除配置文件"
+    echo "4. 删除 SSL 证书"
+    echo "5. 重置防火墙"
+    echo ""
+    read -p "输入 'UNINSTALL' 确认卸载: " confirm
+    
+    if [[ "$confirm" != "UNINSTALL" ]]; then
+        log_info "卸载操作已取消"
+        return
+    fi
+    
+    log_info "开始卸载 Xray..."
+    
+    # Stop services
+    systemctl stop xray nginx || true
+    systemctl disable xray nginx || true
+    
+    # Remove Xray
+    if command -v /usr/local/bin/xray &> /dev/null; then
+        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove --purge
+    fi
+    
+    # Remove configuration files
+    rm -rf /usr/local/etc/xray
+    rm -rf /var/log/xray
+    rm -rf /root/client-configs
+    rm -f /root/.vless-config
+    
+    # Backup and remove Nginx config
+    if [[ -f "$NGINX_CONF_PATH" ]]; then
+        cp "$NGINX_CONF_PATH" "$NGINX_CONF_PATH.backup.$(date +%Y%m%d)"
+        echo "# Default Nginx configuration" > "$NGINX_CONF_PATH"
+    fi
+    
+    # Remove SSL certificates
+    rm -rf /etc/ssl/private/${DOMAIN}.*
+    
+    # Remove ACME certificates
+    if [[ -d "/root/.acme.sh" ]]; then
+        /root/.acme.sh/acme.sh --remove -d "$DOMAIN" || true
+    fi
+    
+    # Reset firewall
+    ufw --force reset
+    ufw --force disable
+    
+    # Remove update marker
+    rm -f /var/log/vless-setup-updated
+    
+    log_success "Xray 卸载完成"
+    log_info "Nginx 配置已备份为: $NGINX_CONF_PATH.backup.$(date +%Y%m%d)"
+    log_info "如需重新安装，请重新运行此脚本"
 }
 
 # Restart Xray service
@@ -866,13 +1194,17 @@ show_management_menu() {
         echo "╠════════════════════════════════════════════════════════════════╣"
         echo "║  1. 查看配置信息"
         echo "║  2. 更换 VLESS UUID"
-        echo "║  3. 重启 Xray 服务"
-        echo "║  4. 查看 Xray 实时日志"
-        echo "║  5. 退出管理面板"
+        echo "║  3. 更换 REALITY 密钥对"
+        echo "║  4. 更换伪装域名 (SNI)"
+        echo "║  5. 重启 Xray 服务"
+        echo "║  6. 查看 Xray 实时日志"
+        echo "║  7. 运行连接诊断"
+        echo "║  8. 卸载 Xray"
+        echo "║  9. 退出管理面板"
         echo "╚════════════════════════════════════════════════════════════════╝"
         echo ""
         
-        read -p "请选择操作 [1-5]: " choice
+        read -p "请选择操作 [1-9]: " choice
         
         case $choice in
             1)
@@ -884,18 +1216,34 @@ show_management_menu() {
                 read -p "按回车键继续..."
                 ;;
             3)
-                restart_xray
+                change_reality_keys
                 read -p "按回车键继续..."
                 ;;
             4)
-                show_xray_logs
+                change_mask_domain
+                read -p "按回车键继续..."
                 ;;
             5)
+                restart_xray
+                read -p "按回车键继续..."
+                ;;
+            6)
+                show_xray_logs
+                ;;
+            7)
+                run_connection_test
+                read -p "按回车键继续..."
+                ;;
+            8)
+                uninstall_xray
+                read -p "按回车键继续..."
+                ;;
+            9)
                 log_info "退出管理面板"
                 exit 0
                 ;;
             *)
-                log_error "无效选择，请输入 1-5"
+                log_error "无效选择，请输入 1-9"
                 sleep 2
                 ;;
         esac
