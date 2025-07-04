@@ -154,7 +154,9 @@ get_user_input() {
     echo -e "${BLUE}[说明]${NC} 请准备以下信息："
     echo "  1. 您在 Cloudflare 中配置的域名 (非伪装域名)"
     echo "  2. 用于申请 SSL 证书的邮箱地址"
-    echo "  3. Cloudflare API Token (需要 Zone:DNS:Edit 权限)"
+    echo "  3. Cloudflare API Token (用于自动申请和续期 SSL 证书)"
+    echo "     - 需要具备 Zone:DNS:Edit 权限"
+    echo "     - 用于通过 DNS 验证方式申请 Let's Encrypt 证书"
     echo ""
     
     # Get domain
@@ -180,8 +182,7 @@ get_user_input() {
     
     # Get Cloudflare API token
     while true; do
-        read -s -p "请输入您的 Cloudflare API Token: " CF_API_TOKEN
-        echo
+        read -p "请输入您的 Cloudflare API Token (明文显示): " CF_API_TOKEN
         if [[ -n "$CF_API_TOKEN" && ${#CF_API_TOKEN} -gt 10 ]]; then
             break
         else
