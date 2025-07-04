@@ -20,6 +20,7 @@ readonly NC='\033[0m' # No Color
 DOMAIN=""
 EMAIL=""
 CF_API_TOKEN=""
+MASK_DOMAIN=""
 UUID=""
 PRIVATE_KEY=""
 PUBLIC_KEY=""
@@ -157,6 +158,7 @@ get_user_input() {
     echo "  3. Cloudflare API Token (用于自动申请和续期 SSL 证书)"
     echo "     - 需要具备 Zone:DNS:Edit 权限"
     echo "     - 用于通过 DNS 验证方式申请 Let's Encrypt 证书"
+    echo "  4. 伪装域名 (用于 Reality 流量伪装，提高安全性)"
     echo ""
     
     # Get domain
@@ -189,6 +191,55 @@ get_user_input() {
             log_error "API Token 无效，请输入有效的 Cloudflare API Token"
         fi
     done
+    
+    # Get mask domain
+    echo ""
+    echo -e "${BLUE}[伪装域名配置]${NC}"
+    echo "伪装域名用于 Reality 协议的流量伪装，建议使用知名网站域名"
+    echo "推荐选项："
+    echo "  1. www.kcrw.com (推荐)"
+    echo "  2. www.lovelive-anime.jp"
+    echo "  3. 自定义域名"
+    echo ""
+    
+    while true; do
+        read -p "请选择伪装域名 [1-3]: " mask_choice
+        case $mask_choice in
+            1)
+                MASK_DOMAIN="www.kcrw.com"
+                break
+                ;;
+            2)
+                MASK_DOMAIN="www.lovelive-anime.jp"
+                break
+                ;;
+            3)
+                while true; do
+                    read -p "请输入自定义伪装域名 (例如: www.example.com): " MASK_DOMAIN
+                    if validate_domain "$MASK_DOMAIN"; then
+                        # Test if the domain is accessible
+                        if curl -I "https://$MASK_DOMAIN" --connect-timeout 10 --max-time 15 &>/dev/null; then
+                            log_success "伪装域名 $MASK_DOMAIN 可访问"
+                            break 2
+                        else
+                            log_warn "伪装域名 $MASK_DOMAIN 无法访问，建议选择其他域名"
+                            read -p "是否继续使用此域名？(y/N): " continue_choice
+                            if [[ "$continue_choice" =~ ^[Yy]$ ]]; then
+                                break 2
+                            fi
+                        fi
+                    else
+                        log_error "域名格式无效，请输入有效的域名格式"
+                    fi
+                done
+                ;;
+            *)
+                log_error "无效选择，请输入 1-3"
+                ;;
+        esac
+    done
+    
+    log_info "选择的伪装域名: $MASK_DOMAIN"
     
     log_success "配置参数收集完成"
 }
@@ -322,7 +373,8 @@ server {
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     
-    location / {
+    # Reality endpoint (hidden path)
+    location /api/v1/reality {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -331,12 +383,60 @@ server {
         proxy_redirect off;
     }
     
+    # gRPC endpoint
     location /grpc {
         grpc_pass grpc://127.0.0.1:8081;
         grpc_set_header Host \$host;
         grpc_set_header X-Real-IP \$remote_addr;
         grpc_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         grpc_set_header X-Forwarded-Proto \$scheme;
+    }
+    
+    # Default masking - proxy to mask domain
+    location / {
+        proxy_pass https://$MASK_DOMAIN;
+        proxy_ssl_server_name on;
+        proxy_ssl_name $MASK_DOMAIN;
+        proxy_set_header Host $MASK_DOMAIN;
+        proxy_set_header User-Agent \$http_user_agent;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Accept-Encoding "";
+        proxy_redirect off;
+        
+        # DNS resolver
+        resolver 1.1.1.1 8.8.8.8 valid=300s;
+        resolver_timeout 10s;
+    }
+}
+
+# Dedicated server for Reality masking on port 8003
+server {
+    listen 127.0.0.1:8003 ssl;
+    server_name $MASK_DOMAIN;
+    
+    # Use real certificate for masking
+    ssl_certificate /etc/ssl/private/${DOMAIN}.crt;
+    ssl_certificate_key /etc/ssl/private/${DOMAIN}.key;
+    
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    
+    # Proxy all traffic to the masking website
+    location / {
+        proxy_pass https://$MASK_DOMAIN;
+        proxy_ssl_server_name on;
+        proxy_ssl_name $MASK_DOMAIN;
+        proxy_set_header Host $MASK_DOMAIN;
+        proxy_set_header User-Agent \$http_user_agent;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        
+        resolver 1.1.1.1 8.8.8.8;
+        resolver_timeout 10s;
     }
 }
 EOF
@@ -396,11 +496,11 @@ configure_xray() {
                 "security": "reality",
                 "realitySettings": {
                     "show": false,
-                    "dest": "127.0.0.1:443",
+                    "dest": "127.0.0.1:8003",
                     "xver": 0,
-                    "serverNames": ["$DOMAIN"],
+                    "serverNames": ["$MASK_DOMAIN"],
                     "privateKey": "$PRIVATE_KEY",
-                    "shortIds": ["$SHORT_ID"]
+                    "shortIds": ["$SHORT_ID", ""]
                 }
             }
         },
@@ -544,7 +644,7 @@ generate_client_config() {
                 "network": "tcp",
                 "security": "reality",
                 "realitySettings": {
-                    "serverName": "$DOMAIN",
+                    "serverName": "$MASK_DOMAIN",
                     "fingerprint": "chrome",
                     "show": false,
                     "publicKey": "$PUBLIC_KEY",
@@ -593,7 +693,7 @@ EOF
 EOF
     
     # Generate share links
-    local reality_link="vless://${UUID}@${DOMAIN}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${DOMAIN}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#Reality-${DOMAIN}"
+    local reality_link="vless://${UUID}@${DOMAIN}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${MASK_DOMAIN}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#Reality-${DOMAIN}"
     local grpc_link="vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&sni=${DOMAIN}&type=grpc&serviceName=grpc&mode=gun#gRPC-${DOMAIN}"
     
     # Save share links
@@ -615,6 +715,7 @@ display_summary() {
     echo "║                                        配置信息汇总                                            ║"
     echo "╠════════════════════════════════════════════════════════════════════════════════════════════════╣"
     echo "║ 域名:           $DOMAIN"
+    echo "║ 伪装域名:         $MASK_DOMAIN"
     echo "║ UUID:             $UUID"
     echo "║ 私钥:      $PRIVATE_KEY"
     echo "║ 公钥:       $PUBLIC_KEY"
@@ -639,13 +740,208 @@ display_summary() {
     
     log_info "配置文件已保存在 /root/client-configs/ 目录中"
     log_info "如需技术支持和故障排查，请检查 /var/log/xray/ 中的日志文件"
+    echo ""
+    
+    # Ask if user wants to enter management menu
+    read -p "是否进入管理菜单？(Y/n): " enter_menu
+    if [[ ! "$enter_menu" =~ ^[Nn]$ ]]; then
+        show_management_menu
+    fi
+}
+
+# ================================================================================
+# MANAGEMENT FUNCTIONS
+# ================================================================================
+
+# Load existing configuration
+load_config() {
+    if [[ -f "/root/.vless-config" ]]; then
+        source /root/.vless-config
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Save configuration for management
+save_config() {
+    cat > /root/.vless-config << EOF
+DOMAIN="$DOMAIN"
+EMAIL="$EMAIL"
+MASK_DOMAIN="$MASK_DOMAIN"
+UUID="$UUID"
+PRIVATE_KEY="$PRIVATE_KEY"
+PUBLIC_KEY="$PUBLIC_KEY"
+SHORT_ID="$SHORT_ID"
+INSTALL_DATE="$(date)"
+EOF
+    chmod 600 /root/.vless-config
+}
+
+# Show current configuration
+show_config() {
+    echo ""
+    echo "╔════════════════════════════════════════════════════════════════╗"
+    echo "║                        当前配置信息                              ║"
+    echo "╠════════════════════════════════════════════════════════════════╣"
+    echo "║ 域名:           $DOMAIN"
+    echo "║ 伪装域名:         $MASK_DOMAIN"
+    echo "║ UUID:             $UUID"
+    echo "║ 私钥:      $PRIVATE_KEY"
+    echo "║ 公钥:       $PUBLIC_KEY"
+    echo "║ Short ID:         $SHORT_ID"
+    echo "║ 安装日期:         $INSTALL_DATE"
+    echo "╚════════════════════════════════════════════════════════════════╝"
+    echo ""
+    
+    echo -e "${BLUE}服务状态:${NC}"
+    echo "- Nginx: $(systemctl is-active nginx) ($(systemctl is-enabled nginx))"
+    echo "- Xray: $(systemctl is-active xray) ($(systemctl is-enabled xray))"
+    echo "- 防火墙: $(ufw status | head -n1 | cut -d' ' -f2)"
+    echo ""
+    
+    echo -e "${BLUE}分享链接:${NC}"
+    if [[ -f "/root/client-configs/reality-share-link.txt" ]]; then
+        echo -e "${GREEN}Reality:${NC} $(cat /root/client-configs/reality-share-link.txt)"
+    fi
+    if [[ -f "/root/client-configs/grpc-share-link.txt" ]]; then
+        echo -e "${GREEN}gRPC:${NC} $(cat /root/client-configs/grpc-share-link.txt)"
+    fi
+}
+
+# Change UUID
+change_uuid() {
+    log_info "更换 UUID..."
+    
+    # Generate new UUID
+    local new_uuid=$(cat /proc/sys/kernel/random/uuid)
+    
+    # Update Xray config
+    sed -i "s/\"id\": \"$UUID\"/\"id\": \"$new_uuid\"/g" "$XRAY_CONF_PATH"
+    
+    # Update saved config
+    sed -i "s/UUID=\"$UUID\"/UUID=\"$new_uuid\"/" /root/.vless-config
+    
+    # Update global variable
+    UUID="$new_uuid"
+    
+    # Restart Xray
+    systemctl restart xray
+    
+    # Regenerate client configs
+    generate_client_config
+    
+    log_success "UUID 已更换为: $new_uuid"
+    log_info "Xray 服务已重启，新的配置文件已生成"
+}
+
+# Restart Xray service
+restart_xray() {
+    log_info "重启 Xray 服务..."
+    
+    systemctl restart xray
+    sleep 2
+    
+    if systemctl is-active --quiet xray; then
+        log_success "Xray 服务重启成功"
+    else
+        log_error "Xray 服务重启失败"
+        systemctl status xray --no-pager -l
+    fi
+}
+
+# Show Xray logs
+show_xray_logs() {
+    echo -e "${BLUE}实时 Xray 日志 (按 Ctrl+C 退出):${NC}"
+    echo "----------------------------------------"
+    journalctl -u xray -f --no-pager
+}
+
+# Management menu
+show_management_menu() {
+    while true; do
+        clear
+        echo "╔════════════════════════════════════════════════════════════════╗"
+        echo "║                    VLESS 管理面板                               ║"
+        echo "╠════════════════════════════════════════════════════════════════╣"
+        echo "║  1. 查看配置信息"
+        echo "║  2. 更换 VLESS UUID"
+        echo "║  3. 重启 Xray 服务"
+        echo "║  4. 查看 Xray 实时日志"
+        echo "║  5. 退出管理面板"
+        echo "╚════════════════════════════════════════════════════════════════╝"
+        echo ""
+        
+        read -p "请选择操作 [1-5]: " choice
+        
+        case $choice in
+            1)
+                show_config
+                read -p "按回车键继续..."
+                ;;
+            2)
+                change_uuid
+                read -p "按回车键继续..."
+                ;;
+            3)
+                restart_xray
+                read -p "按回车键继续..."
+                ;;
+            4)
+                show_xray_logs
+                ;;
+            5)
+                log_info "退出管理面板"
+                exit 0
+                ;;
+            *)
+                log_error "无效选择，请输入 1-5"
+                sleep 2
+                ;;
+        esac
+    done
 }
 
 # Main execution function
 main() {
+    check_privileges
+    
+    # Check if already installed
+    if load_config; then
+        log_info "检测到已安装的配置"
+        echo ""
+        echo "检测到现有安装，您想要："
+        echo "1. 进入管理菜单"
+        echo "2. 重新安装 (将删除现有配置)"
+        echo "3. 退出"
+        echo ""
+        read -p "请选择 [1-3]: " choice
+        
+        case $choice in
+            1)
+                show_management_menu
+                ;;
+            2)
+                log_warn "将重新安装并覆盖现有配置"
+                read -p "确认继续？(y/N): " confirm
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    rm -f /root/.vless-config
+                else
+                    exit 0
+                fi
+                ;;
+            3)
+                exit 0
+                ;;
+            *)
+                log_error "无效选择"
+                exit 1
+                ;;
+        esac
+    fi
+    
     log_info "开始 VLESS-gRPC-REALITY 安装配置..."
     
-    check_privileges
     check_system_requirements
     get_user_input
     update_system
@@ -659,6 +955,7 @@ main() {
     configure_firewall
     start_services
     generate_client_config
+    save_config
     display_summary
     
     log_success "安装配置完成！"
