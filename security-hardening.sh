@@ -2656,6 +2656,13 @@ get_ssh_service_status() {
 # 重启SSH服务
 restart_ssh_service() {
     info_msg "重启SSH服务..."
+    
+    # 备份当前配置状态
+    local current_port=$(get_ssh_config_value "port" "22")
+    local current_root_login=$(get_ssh_config_value "permitrootlogin" "yes")
+    local current_password_auth=$(get_ssh_config_value "passwordauthentication" "yes")
+    
+    info_msg "重启前配置状态 - 端口: $current_port, Root登录: $current_root_login, 密码认证: $current_password_auth"
 
     # 测试配置文件语法（如果sshd命令可用）
     if command -v sshd >/dev/null 2>&1; then
@@ -2683,10 +2690,115 @@ restart_ssh_service() {
         fi
     fi
 
+    # 确保我们的配置文件有最高优先级
+    ensure_ssh_config_priority
+    
     # 重启SSH服务
     manage_ssh_service restart
+    
+    # 验证重启后配置是否保持
+    sleep 2
+    local new_port=$(get_ssh_config_value "port" "22")
+    local new_root_login=$(get_ssh_config_value "permitrootlogin" "yes")
+    local new_password_auth=$(get_ssh_config_value "passwordauthentication" "yes")
+    
+    info_msg "重启后配置状态 - 端口: $new_port, Root登录: $new_root_login, 密码认证: $new_password_auth"
+    
+    # 检查端口是否被重置
+    if [[ "$new_port" != "$current_port" ]]; then
+        error_msg "警告：SSH端口在重启后被重置为 $new_port (之前为 $current_port)"
+        error_msg "这可能是由于云服务商配置文件冲突导致的"
+        
+        # 尝试修复
+        warn_msg "尝试修复端口配置..."
+        force_ssh_port_config "$current_port"
+        
+        # 再次重启验证
+        manage_ssh_service restart
+        sleep 2
+        local final_port=$(get_ssh_config_value "port" "22")
+        
+        if [[ "$final_port" == "$current_port" ]]; then
+            success_msg "端口配置已修复为 $final_port"
+        else
+            error_msg "端口配置修复失败，请手动检查云服务商配置文件"
+            echo ""
+            echo -e "${yellow}可能的解决方案：${white}"
+            echo "1. 检查 /etc/ssh/sshd_config.d/ 目录下的云配置文件"
+            echo "2. 使用命令: ls -la /etc/ssh/sshd_config.d/"
+            echo "3. 检查是否有更高优先级的配置文件覆盖了端口设置"
+            echo "4. 运行脚本的云配置冲突检测功能"
+        fi
+    else
+        success_msg "SSH服务已重启，配置保持正确"
+    fi
+}
 
-    success_msg "SSH服务已重启"
+# 确保SSH配置文件优先级
+ensure_ssh_config_priority() {
+    local our_config="/etc/ssh/sshd_config.d/99-security-hardening.conf"
+    local cloud_configs=(
+        "/etc/ssh/sshd_config.d/99-cloudimg-settings.conf"
+        "/etc/ssh/sshd_config.d/60-cloudimg-settings.conf"
+        "/etc/ssh/sshd_config.d/50-cloud-init.conf"
+        "/etc/ssh/sshd_config.d/50-cloudimg-settings.conf"
+    )
+    
+    # 检查是否有同优先级或更高优先级的云配置文件
+    for cloud_config in "${cloud_configs[@]}"; do
+        if [[ -f "$cloud_config" ]]; then
+            # 如果发现99开头的云配置，我们改用更高优先级
+            if [[ "$(basename "$cloud_config")" =~ ^99- ]]; then
+                local high_priority_config="/etc/ssh/sshd_config.d/99-zz-security-hardening.conf"
+                if [[ -f "$our_config" && ! -f "$high_priority_config" ]]; then
+                    info_msg "检测到高优先级云配置，调整我们的配置文件优先级"
+                    mv "$our_config" "$high_priority_config"
+                fi
+                break
+            fi
+        fi
+    done
+}
+
+# 强制设置SSH端口配置
+force_ssh_port_config() {
+    local port="$1"
+    local config_file="/etc/ssh/sshd_config.d/99-zz-security-hardening.conf"
+    
+    # 如果高优先级文件不存在，使用标准文件
+    if [[ ! -f "$config_file" ]]; then
+        config_file="/etc/ssh/sshd_config.d/99-security-hardening.conf"
+    fi
+    
+    info_msg "强制设置SSH端口为 $port"
+    
+    # 确保文件存在并包含端口设置
+    if [[ -f "$config_file" ]]; then
+        # 更新现有文件中的端口设置
+        if grep -q "^Port " "$config_file"; then
+            sed -i "s/^Port .*/Port $port/" "$config_file"
+        else
+            echo "Port $port" >> "$config_file"
+        fi
+    else
+        # 创建新的配置文件
+        cat > "$config_file" << EOF
+# SSH安全配置 - 由安全加固工具生成
+# 生成时间: $(date)
+# 此文件具有高优先级，用于覆盖云服务商配置
+
+Port $port
+EOF
+    fi
+    
+    # 同时在主配置文件中注释掉默认端口
+    if [[ -f "/etc/ssh/sshd_config" ]]; then
+        sed -i 's/^Port 22/#Port 22/' /etc/ssh/sshd_config
+        sed -i 's/^#Port 22/#Port 22/' /etc/ssh/sshd_config
+    fi
+    
+    chmod 644 "$config_file"
+    success_msg "端口配置已强制设置完成"
 }
 
 # SSH配置管理菜单 (新增)
@@ -2795,19 +2907,36 @@ change_ssh_port_only() {
         return
     fi
 
+    # 确保配置文件优先级
+    ensure_ssh_config_priority
+
     # 创建或更新配置文件
     local config_file="/etc/ssh/sshd_config.d/99-security-hardening.conf"
+    
+    # 检查是否需要使用高优先级文件
+    if [[ -f "/etc/ssh/sshd_config.d/99-zz-security-hardening.conf" ]]; then
+        config_file="/etc/ssh/sshd_config.d/99-zz-security-hardening.conf"
+    fi
 
     if [[ -f "$config_file" ]]; then
         # 更新现有配置文件中的端口
         backup_file "$config_file"
-        sed -i "s/^Port .*/Port $new_port/" "$config_file"
+        if grep -q "^Port " "$config_file"; then
+            sed -i "s/^Port .*/Port $new_port/" "$config_file"
+        else
+            echo "Port $new_port" >> "$config_file"
+        fi
         success_msg "已更新配置文件中的端口设置"
     else
         # 创建新的配置文件
         mkdir -p "$(dirname "$config_file")"
-        echo "# SSH端口配置" > "$config_file"
-        echo "Port $new_port" >> "$config_file"
+        cat > "$config_file" << EOF
+# SSH安全配置 - 由安全加固工具生成
+# 生成时间: $(date)
+# 此文件具有高优先级，用于覆盖云服务商配置
+
+Port $new_port
+EOF
         success_msg "已创建新的端口配置文件"
     fi
 
@@ -2816,9 +2945,8 @@ change_ssh_port_only() {
         success_msg "配置文件语法正确"
 
         if confirm_operation "重启SSH服务以应用新端口"; then
-            manage_service restart sshd
-            success_msg "SSH端口已修改为 $new_port"
-            warn_msg "请使用新端口连接: ssh -p $new_port user@server"
+            # 使用改进的重启函数，包含端口验证
+            restart_ssh_service
         else
             info_msg "配置已保存，请手动重启SSH服务"
         fi
@@ -9499,6 +9627,123 @@ show_system_status() {
     else
         echo "  状态: 未安装"
     fi
+}
+
+# SSH端口重置修复工具
+fix_ssh_port_reset() {
+    clear
+    echo -e "${pink}SSH端口重置修复工具${white}"
+    echo "================================"
+    echo "此工具用于修复SSH端口在重启后被重置为22的问题"
+    echo ""
+    
+    # 检查当前端口
+    local current_port=$(get_ssh_config_value "port" "22")
+    echo "当前SSH端口: $current_port"
+    
+    # 显示所有相关配置文件
+    echo ""
+    echo -e "${cyan}检查SSH配置文件:${white}"
+    echo "主配置文件: /etc/ssh/sshd_config"
+    if [[ -f "/etc/ssh/sshd_config" ]]; then
+        local main_port=$(grep "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' || echo "未设置")
+        echo "  Port设置: $main_port"
+    fi
+    
+    echo ""
+    echo "配置目录文件: /etc/ssh/sshd_config.d/"
+    if [[ -d "/etc/ssh/sshd_config.d" ]]; then
+        for conf_file in /etc/ssh/sshd_config.d/*.conf; do
+            if [[ -f "$conf_file" ]]; then
+                local file_port=$(grep "^Port " "$conf_file" 2>/dev/null | awk '{print $2}' || echo "")
+                if [[ -n "$file_port" ]]; then
+                    echo "  $(basename "$conf_file"): Port $file_port"
+                fi
+            fi
+        done
+    fi
+    
+    echo ""
+    echo -e "${cyan}云服务商配置检测:${white}"
+    local cloud_configs=(
+        "/etc/ssh/sshd_config.d/50-cloud-init.conf"
+        "/etc/ssh/sshd_config.d/60-cloudimg-settings.conf"
+        "/etc/ssh/sshd_config.d/99-cloudimg-settings.conf"
+        "/etc/ssh/sshd_config.d/50-cloudimg-settings.conf"
+    )
+    
+    local found_cloud_config=false
+    for cloud_config in "${cloud_configs[@]}"; do
+        if [[ -f "$cloud_config" ]]; then
+            found_cloud_config=true
+            local cloud_port=$(grep "^Port " "$cloud_config" 2>/dev/null | awk '{print $2}' || echo "未设置")
+            echo "  发现云配置: $(basename "$cloud_config") - Port: $cloud_port"
+        fi
+    done
+    
+    if [[ "$found_cloud_config" == false ]]; then
+        echo "  未发现云服务商配置文件"
+    fi
+    
+    echo ""
+    if [[ "$current_port" == "22" ]]; then
+        error_msg "检测到SSH端口为默认的22，可能需要修复"
+        echo ""
+        echo "请选择操作："
+        echo "1. 设置新的SSH端口"
+        echo "2. 强制恢复之前的非22端口"
+        echo "0. 返回"
+        
+        local choice
+        prompt_for_input "请选择 [0-2]: " choice validate_numeric_range 0 2
+        
+        case $choice in
+            1)
+                local new_port
+                prompt_for_input "请输入新的SSH端口 (1024-65535): " new_port validate_port
+                force_ssh_port_config "$new_port"
+                restart_ssh_service
+                ;;
+            2)
+                echo "常用的非默认端口: 55520, 2222, 2022, 10022"
+                local restore_port
+                prompt_for_input "请输入要恢复的端口: " restore_port validate_port
+                force_ssh_port_config "$restore_port"
+                restart_ssh_service
+                ;;
+            0)
+                return
+                ;;
+        esac
+    else
+        success_msg "当前SSH端口 ($current_port) 不是默认的22端口"
+        echo ""
+        echo "如果您遇到了端口重置问题，可以选择："
+        echo "1. 强化当前端口配置（防止被重置）"
+        echo "2. 修改为其他端口"
+        echo "0. 返回"
+        
+        local choice
+        prompt_for_input "请选择 [0-2]: " choice validate_numeric_range 0 2
+        
+        case $choice in
+            1)
+                force_ssh_port_config "$current_port"
+                success_msg "已强化端口配置，防止被云配置重置"
+                ;;
+            2)
+                local new_port
+                prompt_for_input "请输入新的SSH端口 (1024-65535): " new_port validate_port
+                force_ssh_port_config "$new_port"
+                restart_ssh_service
+                ;;
+            0)
+                return
+                ;;
+        esac
+    fi
+    
+    break_end
 }
 
 # 脚本主入口
