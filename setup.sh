@@ -598,24 +598,33 @@ setup_ssl() {
     # Set Cloudflare API token
     export CF_Token="$CF_API_TOKEN"
     
-    # Issue or renew certificate
+    # Issue or renew certificate with explicit error handling
     log_info "正在申请/更新 SSL 证书..."
-    if /root/.acme.sh/acme.sh --issue --dns dns_cf -d "$DOMAIN" --key-file /etc/ssl/private/${DOMAIN}.key --fullchain-file /etc/ssl/private/${DOMAIN}.crt --reloadcmd "systemctl reload nginx"; then
-        log_success "SSL 证书申请成功"
-    else
-        local exit_code=$?
-        # Exit code 2 means certificate already exists and is valid
-        if [[ $exit_code -eq 2 ]]; then
-            log_info "SSL 证书已存在且有效"
+    
+    # Temporarily disable error exit to handle ACME.sh return codes
+    set +e
+    /root/.acme.sh/acme.sh --issue --dns dns_cf -d "$DOMAIN" --key-file /etc/ssl/private/${DOMAIN}.key --fullchain-file /etc/ssl/private/${DOMAIN}.crt --reloadcmd "systemctl reload nginx"
+    local acme_exit_code=$?
+    set -e
+    
+    # Handle different ACME.sh exit codes
+    case $acme_exit_code in
+        0)
+            log_success "SSL 证书申请成功"
+            ;;
+        2)
+            log_info "SSL 证书已存在且有效，无需重新申请"
             # Try to install existing certificate if files don't exist
             if [[ ! -f "/etc/ssl/private/${DOMAIN}.crt" ]]; then
+                log_info "安装现有证书到指定路径..."
                 /root/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --key-file /etc/ssl/private/${DOMAIN}.key --fullchain-file /etc/ssl/private/${DOMAIN}.crt --reloadcmd "systemctl reload nginx"
             fi
-        else
-            log_error "SSL 证书申请失败，退出码: $exit_code"
+            ;;
+        *)
+            log_error "SSL 证书申请失败，退出码: $acme_exit_code"
             exit 1
-        fi
-    fi
+            ;;
+    esac
     
     # Ensure certificate files exist
     if [[ ! -f "/etc/ssl/private/${DOMAIN}.crt" || ! -f "/etc/ssl/private/${DOMAIN}.key" ]]; then
