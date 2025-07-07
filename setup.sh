@@ -406,6 +406,35 @@ server {
         resolver_timeout 10s;
     }
 }
+
+# Dedicated server for Reality masking on port 8003
+server {
+    listen 127.0.0.1:8003 ssl;
+    server_name $MASK_DOMAIN;
+    
+    # Use real certificate for masking
+    ssl_certificate /etc/ssl/private/${DOMAIN}.crt;
+    ssl_certificate_key /etc/ssl/private/${DOMAIN}.key;
+    
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    
+    # Proxy all traffic to the masking website
+    location / {
+        proxy_pass https://$MASK_DOMAIN;
+        proxy_ssl_server_name on;
+        proxy_ssl_name $MASK_DOMAIN;
+        proxy_set_header Host $MASK_DOMAIN;
+        proxy_set_header User-Agent \$http_user_agent;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        
+        resolver 1.1.1.1 8.8.8.8;
+        resolver_timeout 10s;
+    }
+}
 EOF
     
     # Test nginx configuration (skip if SSL certificates don't exist yet)
@@ -467,8 +496,8 @@ configure_xray() {
     },
     "inbounds": [
         {
-            "listen": "127.0.0.1",
-            "port": 8080,
+            "listen": "0.0.0.0",
+            "port": 443,
             "protocol": "vless",
             "settings": {
                 "clients": [
@@ -484,7 +513,7 @@ configure_xray() {
                 "security": "reality",
                 "realitySettings": {
                     "show": false,
-                    "dest": "$MASK_DOMAIN:443",
+                    "dest": "8003",
                     "xver": 0,
                     "serverNames": ["$MASK_DOMAIN"],
                     "privateKey": "$PRIVATE_KEY",
