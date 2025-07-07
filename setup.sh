@@ -583,11 +583,45 @@ EOF
 setup_ssl() {
     log_info "正在配置 SSL 证书..."
     
+    # Check if certificates already exist and are valid
+    if [[ -f "/etc/ssl/private/${DOMAIN}.crt" && -f "/etc/ssl/private/${DOMAIN}.key" ]]; then
+        # Check certificate expiry (more than 30 days remaining)
+        if openssl x509 -checkend 2592000 -noout -in "/etc/ssl/private/${DOMAIN}.crt" 2>/dev/null; then
+            log_info "SSL 证书已存在且有效，跳过申请"
+            log_success "SSL 证书配置完成"
+            return 0
+        else
+            log_warn "SSL 证书即将到期或已过期，重新申请..."
+        fi
+    fi
+    
     # Set Cloudflare API token
     export CF_Token="$CF_API_TOKEN"
     
-    # Issue certificate
-    /root/.acme.sh/acme.sh --issue --dns dns_cf -d "$DOMAIN" --key-file /etc/ssl/private/${DOMAIN}.key --fullchain-file /etc/ssl/private/${DOMAIN}.crt --reloadcmd "systemctl reload nginx"
+    # Issue or renew certificate
+    log_info "正在申请/更新 SSL 证书..."
+    if /root/.acme.sh/acme.sh --issue --dns dns_cf -d "$DOMAIN" --key-file /etc/ssl/private/${DOMAIN}.key --fullchain-file /etc/ssl/private/${DOMAIN}.crt --reloadcmd "systemctl reload nginx"; then
+        log_success "SSL 证书申请成功"
+    else
+        local exit_code=$?
+        # Exit code 2 means certificate already exists and is valid
+        if [[ $exit_code -eq 2 ]]; then
+            log_info "SSL 证书已存在且有效"
+            # Try to install existing certificate if files don't exist
+            if [[ ! -f "/etc/ssl/private/${DOMAIN}.crt" ]]; then
+                /root/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --key-file /etc/ssl/private/${DOMAIN}.key --fullchain-file /etc/ssl/private/${DOMAIN}.crt --reloadcmd "systemctl reload nginx"
+            fi
+        else
+            log_error "SSL 证书申请失败，退出码: $exit_code"
+            exit 1
+        fi
+    fi
+    
+    # Ensure certificate files exist
+    if [[ ! -f "/etc/ssl/private/${DOMAIN}.crt" || ! -f "/etc/ssl/private/${DOMAIN}.key" ]]; then
+        log_error "SSL 证书文件不存在，无法继续"
+        exit 1
+    fi
     
     # Set proper permissions
     chmod 600 /etc/ssl/private/${DOMAIN}.key
