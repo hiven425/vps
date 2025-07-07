@@ -464,7 +464,7 @@ configure_xray() {
         "error": "/var/log/xray/error.log"
     },
     "routing": {
-        "domainStrategy": "UseIP",
+        "domainStrategy": "IPIfNonMatch",
         "rules": [
             {
                 "type": "field",
@@ -473,8 +473,13 @@ configure_xray() {
             },
             {
                 "type": "field",
+                "domain": ["geosite:cn"],
+                "outboundTag": "direct"
+            },
+            {
+                "type": "field",
                 "ip": ["geoip:cn"],
-                "outboundTag": "blocked"
+                "outboundTag": "direct"
             },
             {
                 "type": "field",
