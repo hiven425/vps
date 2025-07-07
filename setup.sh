@@ -515,7 +515,7 @@ configure_xray() {
                     "show": false,
                     "dest": "127.0.0.1:8003",
                     "xver": 0,
-                    "serverNames": ["$MASK_DOMAIN"],
+                    "serverNames": ["$DOMAIN"],
                     "privateKey": "$PRIVATE_KEY",
                     "shortIds": ["$SHORT_ID", ""]
                 }
@@ -732,7 +732,7 @@ generate_client_config() {
                 "network": "tcp",
                 "security": "reality",
                 "realitySettings": {
-                    "serverName": "$MASK_DOMAIN",
+                    "serverName": "$DOMAIN",
                     "fingerprint": "chrome",
                     "show": false,
                     "publicKey": "$PUBLIC_KEY",
@@ -781,7 +781,7 @@ EOF
 EOF
     
     # Generate share links
-    local reality_link="vless://${UUID}@${DOMAIN}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${MASK_DOMAIN}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#Reality-${DOMAIN}"
+    local reality_link="vless://${UUID}@${DOMAIN}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${DOMAIN}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#Reality-${DOMAIN}"
     local grpc_link="vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&sni=${DOMAIN}&type=grpc&serviceName=grpc&mode=gun#gRPC-${DOMAIN}"
     
     # Save share links
