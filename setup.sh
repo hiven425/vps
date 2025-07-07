@@ -410,7 +410,7 @@ server {
 # Dedicated server for Reality masking on port 8003
 server {
     listen 127.0.0.1:8003 ssl;
-    server_name $MASK_DOMAIN;
+    server_name $DOMAIN;
     
     # Use real certificate for masking
     ssl_certificate /etc/ssl/private/${DOMAIN}.crt;
@@ -515,7 +515,7 @@ configure_xray() {
                     "show": false,
                     "dest": "8003",
                     "xver": 0,
-                    "serverNames": ["$MASK_DOMAIN"],
+                    "serverNames": ["$DOMAIN"],
                     "privateKey": "$PRIVATE_KEY",
                     "shortIds": ["$SHORT_ID", ""]
                 }
@@ -681,13 +681,23 @@ start_services() {
         exit 1
     fi
     
-    # Start and enable Nginx
-    systemctl restart nginx
+    # Gracefully reload Nginx (faster and safer than restart)
+    if systemctl is-active --quiet nginx; then
+        log_info "Nginx 已运行，执行优雅重载..."
+        systemctl reload nginx
+    else
+        log_info "Nginx 未运行，启动服务..."
+        systemctl start nginx
+    fi
     systemctl enable nginx
     
-    # Start and enable Xray
+    # Restart Xray (configuration changes require restart)
+    log_info "重启 Xray 服务..."
     systemctl restart xray
     systemctl enable xray
+    
+    # Wait for services to stabilize
+    sleep 3
     
     # Check service status
     if systemctl is-active --quiet nginx && systemctl is-active --quiet xray; then
@@ -732,7 +742,7 @@ generate_client_config() {
                 "network": "tcp",
                 "security": "reality",
                 "realitySettings": {
-                    "serverName": "$MASK_DOMAIN",
+                    "serverName": "$DOMAIN",
                     "fingerprint": "chrome",
                     "show": false,
                     "publicKey": "$PUBLIC_KEY",
@@ -781,7 +791,7 @@ EOF
 EOF
     
     # Generate share links
-    local reality_link="vless://${UUID}@${DOMAIN}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${MASK_DOMAIN}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#Reality-${DOMAIN}"
+    local reality_link="vless://${UUID}@${DOMAIN}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${DOMAIN}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#Reality-${DOMAIN}"
     local grpc_link="vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&sni=${DOMAIN}&type=grpc&serviceName=grpc&mode=gun#gRPC-${DOMAIN}"
     
     # Save share links
