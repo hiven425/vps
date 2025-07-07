@@ -619,6 +619,20 @@ configure_firewall() {
 start_services() {
     log_info "正在启动服务..."
     
+    # Verify SSL certificates exist before starting Nginx
+    if [[ ! -f "/etc/ssl/private/${DOMAIN}.crt" || ! -f "/etc/ssl/private/${DOMAIN}.key" ]]; then
+        log_error "SSL 证书文件不存在，无法启动 Nginx"
+        log_error "证书路径: /etc/ssl/private/${DOMAIN}.crt"
+        log_error "私钥路径: /etc/ssl/private/${DOMAIN}.key"
+        exit 1
+    fi
+    
+    # Test nginx configuration before restart
+    if ! nginx -t; then
+        log_error "Nginx 配置文件测试失败"
+        exit 1
+    fi
+    
     # Start and enable Nginx
     systemctl restart nginx
     systemctl enable nginx
