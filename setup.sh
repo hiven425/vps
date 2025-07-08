@@ -40,7 +40,7 @@ fi
 ACME_FORCE_FLAG=""
 if [[ "$1" == "--force" ]]; then
     echo -e "\033[1;33m[WARN]\033[0m 检测到 --force 参数，将强制重新申请证书。"
-    echo -e "\033[0;34m[INFO]\033[0m 这将忽略现有证书的有效期，强制重新申请新证书。"
+    echo -e "\033[0;34m[INFO]\033[0m 这将删除现有证书并重新申请新证书。"
     ACME_FORCE_FLAG="--force"
 fi
 
@@ -401,6 +401,15 @@ setup_ssl_certificate() {
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt 2>/dev/null || true
     ~/.acme.sh/acme.sh --register-account -m "admin@${MY_DOMAIN}" --server letsencrypt 2>/dev/null || true
 
+    # 如果启用了 --force 参数，先删除现有证书
+    if [[ -n "$ACME_FORCE_FLAG" ]]; then
+        log_info "强制模式：删除现有证书文件..."
+        rm -rf "/root/.acme.sh/${MY_DOMAIN}_ecc"
+        rm -f "/etc/ssl/private/fullchain.cer"
+        rm -f "/etc/ssl/private/private.key"
+        log_info "现有证书已删除"
+    fi
+
     # 智能证书申请流程 - 这是核心优化！
     log_info "正在检查并申请 SSL 证书..."
 
@@ -508,6 +517,28 @@ configure_xray() {
     # 生成 Xray 配置文件 (严格按照最终确定的正确逻辑)
     cat > /usr/local/etc/xray/config.json << EOF
 {
+  "log": {
+    "loglevel": "warning"
+  },
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "port": "443",
+        "network": "udp",
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "ip": [
+          "geoip:cn",
+          "geoip:private"
+        ],
+        "outboundTag": "block"
+      }
+    ]
+  },
   "inbounds": [
     {
       "listen": "0.0.0.0",
@@ -528,7 +559,7 @@ configure_xray() {
         "realitySettings": {
           "show": false,
           "dest": "127.0.0.1:8003",
-          "xver": 0,
+          "xver": 1,
           "serverNames": [
             "$MY_DOMAIN"
           ],
@@ -537,6 +568,14 @@ configure_xray() {
             "$SHORT_ID"
           ]
         }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
       }
     }
   ],
@@ -549,7 +588,15 @@ configure_xray() {
       "protocol": "blackhole",
       "tag": "block"
     }
-  ]
+  ],
+  "policy": {
+    "levels": {
+      "0": {
+        "handshake": 2,
+        "connIdle": 120
+      }
+    }
+  }
 }
 EOF
     
