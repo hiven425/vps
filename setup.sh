@@ -1,13 +1,48 @@
 #!/bin/bash
 #
-# VLESS Reality 服务管理面板
+# VLESS Reality 终极部署脚本
 # 基于 https://jollyroger.top/sites/223.html
-# 作者: 资深 DevOps 工程师
-# 版本: 5.0.0
-# 功能: 一键部署、配置管理、安全加固、状态监控
+# 作者: 顶级 DevOps 工程师
+# 版本: 6.0.0 - 终极版
+# 功能: 智能证书处理、详细诊断、完全幂等性、用户友好
+# 特性: 支持 --force 强制证书续期、智能跳过检测、详细失败诊断
 # ===========================================================
 
 set -e  # 遇到错误立即退出
+
+# 显示使用说明
+show_usage() {
+    echo -e "${CYAN}VLESS Reality 终极部署脚本 v6.0.0${NC}"
+    echo ""
+    echo -e "${WHITE}使用方法:${NC}"
+    echo "  bash setup.sh           # 正常模式（推荐）"
+    echo "  bash setup.sh --force   # 强制模式（重新申请证书）"
+    echo ""
+    echo -e "${WHITE}参数说明:${NC}"
+    echo "  --force    强制重新申请 SSL 证书，即使现有证书仍然有效"
+    echo "  --help     显示此帮助信息"
+    echo ""
+    echo -e "${WHITE}特性:${NC}"
+    echo "  ✓ 智能证书处理 - 自动检测证书状态，避免不必要的申请"
+    echo "  ✓ 详细诊断信息 - 失败时自动显示详细日志"
+    echo "  ✓ 完全幂等性   - 可安全重复运行"
+    echo "  ✓ 用户友好     - 清晰的进度显示和状态说明"
+    echo ""
+}
+
+# 检查帮助参数
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+    show_usage
+    exit 0
+fi
+
+# 检查是否提供了 --force 参数
+ACME_FORCE_FLAG=""
+if [[ "$1" == "--force" ]]; then
+    echo -e "\033[1;33m[WARN]\033[0m 检测到 --force 参数，将强制重新申请证书。"
+    echo -e "\033[0;34m[INFO]\033[0m 这将忽略现有证书的有效期，强制重新申请新证书。"
+    ACME_FORCE_FLAG="--force"
+fi
 
 # 颜色定义
 readonly RED='\033[0;31m'
@@ -20,7 +55,7 @@ readonly WHITE='\033[1;37m'
 readonly NC='\033[0m' # No Color
 
 # 全局变量
-readonly SCRIPT_VERSION="5.0.0"
+readonly SCRIPT_VERSION="6.0.0"
 readonly CONFIG_DIR="/etc/setup"
 readonly CONFIG_FILE="${CONFIG_DIR}/config.ini"
 readonly BACKUP_DIR="/root/vless-backups"
@@ -165,7 +200,9 @@ create_backup() {
 show_main_menu() {
     clear
     echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║              VLESS Reality 服务管理面板 v${SCRIPT_VERSION}              ║${NC}"
+    echo -e "${CYAN}║              VLESS Reality 终极管理面板 v${SCRIPT_VERSION}              ║${NC}"
+    echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${GREEN}║  ✓ 智能证书处理  ✓ 详细诊断  ✓ 完全幂等性  ✓ 用户友好        ║${NC}"
     echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${WHITE}║  1. 首次安装或完整重装服务                                      ║${NC}"
     echo -e "${WHITE}║  2. 修改服务配置                                                ║${NC}"
@@ -175,6 +212,8 @@ show_main_menu() {
     echo -e "${WHITE}║  6. 卸载服务                                                    ║${NC}"
     echo -e "${WHITE}║  7. 修改SSH端口                                                 ║${NC}"
     echo -e "${WHITE}║  8. 退出                                                        ║${NC}"
+    echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${YELLOW}║  提示: 支持 bash setup.sh --force 强制重新申请证书             ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
 }
@@ -183,7 +222,7 @@ show_main_menu() {
 # 功能1: 首次安装或完整重装服务
 # ========================================
 
-get_user_input() {
+collect_user_input() {
     echo -e "${CYAN}=== 配置参数收集 ===${NC}"
     echo ""
     
@@ -346,37 +385,85 @@ generate_keys() {
 }
 
 setup_ssl_certificate() {
-    log_info "配置 SSL 证书..."
-    
+    log_info "配置 SSL 证书（智能处理模式）..."
+
     # 创建证书目录
     mkdir -p /etc/ssl/private
-    
+
     # 设置 Cloudflare API Token
     export CF_Token="$CF_TOKEN"
-    
-    # 设置默认 CA 为 Let's Encrypt 并注册账户
+
+    # 设置默认 CA 为 Let's Encrypt 并注册账户（幂等性处理）
     log_info "设置 Let's Encrypt CA..."
-    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-    ~/.acme.sh/acme.sh --register-account -m "admin@${MY_DOMAIN}" --server letsencrypt
-    
-    # 使用 DNS 验证申请证书
-    log_info "申请 SSL 证书 (DNS 验证)..."
-    ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --server letsencrypt
-    check_result "SSL 证书申请"
-    
-    # 安装证书到指定位置
-    log_info "安装证书..."
-    ~/.acme.sh/acme.sh --install-cert -d "$MY_DOMAIN" \
-        --key-file /etc/ssl/private/private.key \
+    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt 2>/dev/null || true
+    ~/.acme.sh/acme.sh --register-account -m "admin@${MY_DOMAIN}" --server letsencrypt 2>/dev/null || true
+
+    # 智能证书申请流程 - 这是核心优化！
+    log_info "正在检查并申请 SSL 证书..."
+
+    # 执行 issue 命令，并附带可能的 --force 标志
+    ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --ecc $ACME_FORCE_FLAG
+
+    # 检查 issue 命令的退出状态码
+    ISSUE_STATUS=$?
+
+    if [ "$ISSUE_STATUS" -eq 0 ]; then
+        log_success "新证书已成功签发！"
+    elif [ "$ISSUE_STATUS" -eq 2 ]; then
+        # 这是关键的用户沟通！
+        log_info "证书已存在且在有效期内。跳过续期是正确的行为。"
+        log_info "这不是错误 - acme.sh 智能地避免了不必要的证书申请。"
+    else
+        log_error "证书申请失败，状态码: $ISSUE_STATUS"
+        log_error "请检查以下可能的原因："
+        log_error "1. Cloudflare API Token 是否正确"
+        log_error "2. 域名 DNS 是否指向 Cloudflare"
+        log_error "3. 网络连接是否正常"
+        log_info "详细错误信息请查看: /root/.acme.sh/acme.sh.log"
+        echo ""
+        log_info "显示最后 10 行 acme.sh 日志："
+        tail -n 10 /root/.acme.sh/acme.sh.log 2>/dev/null || echo "无法读取 acme.sh 日志文件"
+        exit 1
+    fi
+
+    # 无论 issue 的结果是新建(0)还是跳过(2)，都必须执行 install-cert
+    log_info "正在确保证书被正确安装到 Nginx 配置目录..."
+    ~/.acme.sh/acme.sh --install-cert -d "$MY_DOMAIN" --ecc \
+        --key-file       /etc/ssl/private/private.key \
         --fullchain-file /etc/ssl/private/fullchain.cer \
-        --reloadcmd "sudo systemctl force-reload nginx"
-    check_result "SSL 证书安装"
-    
-    # 设置权限
+        --reloadcmd      "sudo systemctl force-reload nginx"
+
+    if [ $? -ne 0 ]; then
+        log_error "执行 --install-cert 时出错，请检查 acme.sh 日志。"
+        log_info "显示最后 10 行 acme.sh 日志："
+        tail -n 10 /root/.acme.sh/acme.sh.log 2>/dev/null || echo "无法读取 acme.sh 日志文件"
+        exit 1
+    fi
+
+    # 设置正确的权限
     chmod 600 /etc/ssl/private/private.key
     chmod 644 /etc/ssl/private/fullchain.cer
-    
-    log_success "SSL 证书配置完成"
+
+    log_success "证书已成功配置给 Nginx。"
+
+    # 验证证书文件
+    if [[ -f "/etc/ssl/private/fullchain.cer" ]] && [[ -f "/etc/ssl/private/private.key" ]]; then
+        log_info "证书文件验证："
+        log_info "✓ 证书文件: /etc/ssl/private/fullchain.cer"
+        log_info "✓ 私钥文件: /etc/ssl/private/private.key"
+
+        # 检查证书有效期
+        if openssl x509 -checkend 86400 -noout -in /etc/ssl/private/fullchain.cer 2>/dev/null; then
+            log_success "✓ 证书有效期检查通过（24小时内不会过期）"
+        else
+            log_warn "⚠ 证书可能即将过期，但安装成功"
+        fi
+    else
+        log_error "证书文件验证失败！"
+        exit 1
+    fi
+
+    log_success "SSL 证书配置完成！"
 }
 
 configure_xray() {
@@ -577,35 +664,102 @@ configure_firewall() {
 }
 
 start_services() {
-    log_info "启动和配置服务..."
-    
+    log_info "启动和配置服务（增强诊断模式）..."
+
     # 测试 Nginx 配置
+    log_info "测试 Nginx 配置文件语法..."
     if ! nginx -t; then
-        log_error "Nginx 配置测试失败"
+        log_error "Nginx 配置测试失败！"
+        log_error "请检查 Nginx 配置文件语法错误"
+        log_info "配置文件位置: /etc/nginx/nginx.conf"
         exit 1
     fi
-    
-    # 启动服务
+    log_success "✓ Nginx 配置文件语法正确"
+
+    # 测试 Xray 配置
+    log_info "测试 Xray 配置文件语法..."
+    if ! /usr/local/bin/xray test -config /usr/local/etc/xray/config.json; then
+        log_error "Xray 配置测试失败！"
+        log_error "请检查 Xray 配置文件语法错误"
+        log_info "配置文件位置: /usr/local/etc/xray/config.json"
+        exit 1
+    fi
+    log_success "✓ Xray 配置文件语法正确"
+
+    # 启动 Nginx 服务
+    log_info "重启 Nginx 服务..."
     systemctl restart nginx
-    check_result "Nginx 重启"
-    
-    systemctl restart xray
-    check_result "Xray 重启"
-    
-    systemctl enable nginx xray
-    
-    # 等待服务启动
-    sleep 3
-    
-    # 检查服务状态
-    if systemctl is-active --quiet nginx && systemctl is-active --quiet xray; then
-        log_success "所有服务启动成功"
-    else
-        log_error "服务启动失败"
-        log_info "Nginx 状态: $(systemctl is-active nginx)"
-        log_info "Xray 状态: $(systemctl is-active xray)"
+    if [ $? -ne 0 ]; then
+        log_error "Nginx 重启失败！"
+        log_info "显示 Nginx 服务状态和日志："
+        systemctl status nginx --no-pager -l
+        log_info "最后 20 行 Nginx 日志："
+        journalctl -u nginx -n 20 --no-pager
         exit 1
     fi
+    log_success "✓ Nginx 服务重启成功"
+
+    # 启动 Xray 服务
+    log_info "重启 Xray 服务..."
+    systemctl restart xray
+    if [ $? -ne 0 ]; then
+        log_error "Xray 重启失败！"
+        log_info "显示 Xray 服务状态和日志："
+        systemctl status xray --no-pager -l
+        log_info "最后 20 行 Xray 日志："
+        journalctl -u xray -n 20 --no-pager
+        exit 1
+    fi
+    log_success "✓ Xray 服务重启成功"
+
+    # 启用服务自启动
+    log_info "启用服务自启动..."
+    systemctl enable nginx xray
+    log_success "✓ 服务自启动已启用"
+
+    # 等待服务完全启动
+    log_info "等待服务完全启动..."
+    sleep 5
+
+    # 详细的服务状态检查
+    log_info "执行详细的服务状态检查..."
+
+    # 检查 Nginx 状态
+    if ! systemctl is-active --quiet nginx; then
+        log_error "Nginx 服务启动失败！"
+        log_info "Nginx 服务状态: $(systemctl is-active nginx)"
+        log_info "显示最后 20 行 Nginx 日志："
+        journalctl -u nginx -n 20 --no-pager
+        exit 1
+    fi
+    log_success "✓ Nginx 服务运行正常"
+
+    # 检查 Xray 状态
+    if ! systemctl is-active --quiet xray; then
+        log_error "Xray 服务启动失败！"
+        log_info "Xray 服务状态: $(systemctl is-active xray)"
+        log_info "显示最后 20 行 Xray 日志："
+        journalctl -u xray -n 20 --no-pager
+        exit 1
+    fi
+    log_success "✓ Xray 服务运行正常"
+
+    # 检查端口监听状态
+    log_info "检查端口监听状态..."
+    if ss -tlnp | grep -q ":443"; then
+        log_success "✓ 443端口正在监听"
+    else
+        log_error "443端口未监听！"
+        log_info "当前监听的端口："
+        ss -tlnp | grep -E ":(80|443|22)"
+        exit 1
+    fi
+
+    log_success "所有服务启动成功并运行正常！"
+    log_info "服务状态摘要："
+    log_info "- Nginx: $(systemctl is-active nginx) ($(systemctl is-enabled nginx))"
+    log_info "- Xray:  $(systemctl is-active xray) ($(systemctl is-enabled xray))"
+    log_info "- 443端口: 正在监听"
 }
 
 generate_client_config() {
@@ -647,34 +801,90 @@ EOF
     log_success "客户端配置生成完成"
 }
 
-# 首次安装主函数
+# 首次安装主函数（终极增强版）
 first_install() {
+    echo ""
+    echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║                    VLESS Reality 终极部署                        ║${NC}"
+    echo -e "${CYAN}║                      开始安装流程                                ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+
     log_info "开始首次安装或完整重装..."
-    
+    log_info "此脚本具有完全幂等性，可安全重复运行"
+
+    if [[ -n "$ACME_FORCE_FLAG" ]]; then
+        log_warn "强制模式已启用，将重新申请所有证书"
+    fi
+
     # 如果存在配置，创建备份
     if [[ -f "$CONFIG_FILE" ]]; then
+        log_info "检测到现有配置，正在创建备份..."
         create_backup
     fi
-    
-    get_user_input
+
+    echo ""
+    log_info "步骤 1/11: 收集用户配置参数"
+    collect_user_input
+
+    echo ""
+    log_info "步骤 2/11: 更新系统并安装依赖"
     update_system
+
+    echo ""
+    log_info "步骤 3/11: 安装 Xray 核心"
     install_xray
+
+    echo ""
+    log_info "步骤 4/11: 安装 acme.sh 证书工具"
     install_acme
+
+    echo ""
+    log_info "步骤 5/11: 生成加密密钥"
     generate_keys
+
+    echo ""
+    log_info "步骤 6/11: 配置 SSL 证书（智能处理）"
     setup_ssl_certificate
+
+    echo ""
+    log_info "步骤 7/11: 配置 Xray 服务"
     configure_xray
+
+    echo ""
+    log_info "步骤 8/11: 配置 Nginx 反向代理"
     configure_nginx
+
+    echo ""
+    log_info "步骤 9/11: 配置防火墙"
     configure_firewall
+
+    echo ""
+    log_info "步骤 10/11: 启动服务（增强诊断）"
     start_services
+
+    echo ""
+    log_info "步骤 11/11: 生成客户端配置"
     generate_client_config
     save_config
-    
-    log_success "安装完成！"
+
     echo ""
-    
+    echo -e "${GREEN}╔══════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║                        安装完成！                                ║${NC}"
+    echo -e "${GREEN}╚══════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    log_success "VLESS Reality 服务已成功部署！"
+    log_info "此脚本具有完全幂等性，可重复安全运行"
+
+    if [[ -n "$ACME_FORCE_FLAG" ]]; then
+        log_info "强制模式已完成，所有证书已重新申请"
+    fi
+
+    echo ""
     # 显示客户端连接信息
     show_client_info
-    
+
     echo ""
     read -p "按回车键返回主菜单..."
 }
@@ -732,19 +942,38 @@ change_main_domain() {
     done
     
     log_info "开始更换主域名到: $new_domain"
-    
-    # 申请新证书
+
+    # 申请新证书（使用智能处理逻辑）
     export CF_Token="$CF_TOKEN"
     ~/.acme.sh/acme.sh --register-account -m "admin@${new_domain}" --server letsencrypt 2>/dev/null || true
-    ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$new_domain" --server letsencrypt
-    check_result "新域名证书申请"
-    
+
+    log_info "为新域名申请 SSL 证书..."
+    ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$new_domain" --ecc
+
+    # 检查证书申请状态
+    ISSUE_STATUS=$?
+    if [ "$ISSUE_STATUS" -eq 0 ]; then
+        log_success "新域名证书申请成功！"
+    elif [ "$ISSUE_STATUS" -eq 2 ]; then
+        log_info "新域名证书已存在且有效，跳过申请。"
+    else
+        log_error "新域名证书申请失败，状态码: $ISSUE_STATUS"
+        log_info "详细错误信息请查看: /root/.acme.sh/acme.sh.log"
+        exit 1
+    fi
+
     # 安装新证书
-    ~/.acme.sh/acme.sh --install-cert -d "$new_domain" \
+    log_info "安装新域名证书..."
+    ~/.acme.sh/acme.sh --install-cert -d "$new_domain" --ecc \
         --key-file /etc/ssl/private/private.key \
         --fullchain-file /etc/ssl/private/fullchain.cer \
-        --reloadcmd "sudo systemctl force-reload nginx" --server letsencrypt
-    check_result "新域名证书安装"
+        --reloadcmd "sudo systemctl force-reload nginx"
+
+    if [ $? -ne 0 ]; then
+        log_error "新域名证书安装失败"
+        exit 1
+    fi
+    log_success "新域名证书安装成功"
     
     # 更新配置文件
     sed -i "s/$MY_DOMAIN/$new_domain/g" /usr/local/etc/xray/config.json
