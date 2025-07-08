@@ -293,12 +293,9 @@ setup_ssl_certificate() {
     
     # 使用 DNS 验证申请证书
     log_info "申请 SSL 证书 (DNS 验证)..."
-    if [[ -f "/etc/ssl/private/fullchain.cer" && -f "/etc/ssl/private/private.key" ]]; then
-        log_info "检测到现有证书，强制更新..."
-        ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --server letsencrypt --force
-    else
-        ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --server letsencrypt
-    fi
+    
+    # 直接使用 --force 参数，避免跳过已存在的证书
+    ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --server letsencrypt --force
     check_result "SSL 证书申请"
     
     # 安装证书到指定位置
