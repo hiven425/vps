@@ -354,9 +354,14 @@ setup_ssl_certificate() {
     # 设置 Cloudflare API Token
     export CF_Token="$CF_TOKEN"
     
+    # 设置默认 CA 为 Let's Encrypt 并注册账户
+    log_info "设置 Let's Encrypt CA..."
+    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+    ~/.acme.sh/acme.sh --register-account -m "admin@${MY_DOMAIN}" --server letsencrypt
+    
     # 使用 DNS 验证申请证书
     log_info "申请 SSL 证书 (DNS 验证)..."
-    ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN"
+    ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --server letsencrypt
     check_result "SSL 证书申请"
     
     # 安装证书到指定位置
@@ -730,14 +735,15 @@ change_main_domain() {
     
     # 申请新证书
     export CF_Token="$CF_TOKEN"
-    ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$new_domain"
+    ~/.acme.sh/acme.sh --register-account -m "admin@${new_domain}" --server letsencrypt 2>/dev/null || true
+    ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$new_domain" --server letsencrypt
     check_result "新域名证书申请"
     
     # 安装新证书
     ~/.acme.sh/acme.sh --install-cert -d "$new_domain" \
         --key-file /etc/ssl/private/private.key \
         --fullchain-file /etc/ssl/private/fullchain.cer \
-        --reloadcmd "sudo systemctl force-reload nginx"
+        --reloadcmd "sudo systemctl force-reload nginx" --server letsencrypt
     check_result "新域名证书安装"
     
     # 更新配置文件
