@@ -300,6 +300,9 @@ collect_user_input() {
     
     echo ""
     log_success "配置参数收集完成"
+
+    # 立即保存配置，防止中途失败时丢失用户输入
+    save_config
 }
 
 update_system() {
