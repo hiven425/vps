@@ -876,6 +876,313 @@ EOF
     chmod 600 /root/.vless-config
 }
 
+# Delete all configurations and files
+delete_configuration() {
+    echo -e "${RED}⚠️  警告：删除配置操作${NC}"
+    echo "此操作将完全删除以下内容："
+    echo "  1. Xray 服务和配置文件"
+    echo "  2. Nginx VLESS 相关配置"
+    echo "  3. SSL 证书文件"
+    echo "  4. 客户端配置文件"
+    echo "  5. 防火墙规则"
+    echo "  6. 系统服务配置"
+    echo ""
+    echo -e "${YELLOW}注意：此操作不可逆！${NC}"
+    echo ""
+    
+    # 三重确认
+    read -p "确认删除所有配置？请输入 'DELETE' (大写): " confirm1
+    if [[ "$confirm1" != "DELETE" ]]; then
+        log_info "操作已取消"
+        return 0
+    fi
+    
+    read -p "再次确认删除？请输入您的域名 '$DOMAIN': " confirm2
+    if [[ "$confirm2" != "$DOMAIN" ]]; then
+        log_error "域名输入不匹配，操作已取消"
+        return 1
+    fi
+    
+    read -p "最后确认：确定要删除所有配置吗？(yes/no): " confirm3
+    if [[ "$confirm3" != "yes" ]]; then
+        log_info "操作已取消"
+        return 0
+    fi
+    
+    log_info "开始删除配置..."
+    
+    # 停止服务
+    log_info "停止相关服务..."
+    systemctl stop xray 2>/dev/null || true
+    systemctl disable xray 2>/dev/null || true
+    systemctl stop nginx 2>/dev/null || true
+    
+    # 删除 Xray
+    log_info "删除 Xray..."
+    if command -v /usr/local/bin/xray &> /dev/null; then
+        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove --purge 2>/dev/null || true
+    fi
+    
+    # 删除配置文件
+    log_info "删除配置文件..."
+    rm -rf /usr/local/etc/xray 2>/dev/null || true
+    rm -rf /var/log/xray 2>/dev/null || true
+    rm -rf /root/client-configs 2>/dev/null || true
+    rm -f /root/.vless-config 2>/dev/null || true
+    
+    # 备份并恢复默认 Nginx 配置
+    log_info "恢复 Nginx 默认配置..."
+    if [[ -f "/etc/nginx/sites-available/default" ]]; then
+        cp /etc/nginx/sites-available/default /etc/nginx/sites-available/default.vless.backup.$(date +%Y%m%d_%H%M%S)
+        cat > /etc/nginx/sites-available/default << 'EOF'
+##
+# You should look at the following URL's in order to grasp a solid understanding
+# of Nginx configuration files in order to fully unleash the power of Nginx.
+# https://www.nginx.com/resources/wiki/start/
+# https://www.nginx.com/resources/wiki/start/topics/tutorials/config_pitfalls/
+# https://wiki.debian.org/Nginx/DirectoryStructure
+#
+# In most cases, administrators will remove this file from sites-enabled/ and
+# leave it as reference inside of sites-available where it will continue to be
+# updated by the nginx packaging team.
+#
+# This file will automatically load configuration files provided by other
+# applications, such as Drupal or Wordpress. These applications will be made
+# available underneath a path with that package name, such as /drupal8.
+#
+# Please see /usr/share/doc/nginx-doc/examples/ for more detailed examples.
+##
+
+# Default server configuration
+server {
+	listen 80 default_server;
+	listen [::]:80 default_server;
+
+	root /var/www/html;
+	index index.html index.htm index.nginx-debian.html;
+
+	server_name _;
+
+	location / {
+		try_files $uri $uri/ =404;
+	}
+}
+EOF
+    fi
+    
+    # 删除 SSL 证书
+    log_info "删除 SSL 证书..."
+    if [[ -n "$DOMAIN" ]]; then
+        rm -f /etc/ssl/private/${DOMAIN}.* 2>/dev/null || true
+        # 删除 ACME 证书
+        if [[ -d "/root/.acme.sh" ]]; then
+            /root/.acme.sh/acme.sh --remove -d "$DOMAIN" 2>/dev/null || true
+        fi
+    fi
+    
+    # 重置防火墙
+    log_info "重置防火墙配置..."
+    ufw --force reset 2>/dev/null || true
+    ufw default deny incoming 2>/dev/null || true
+    ufw default allow outgoing 2>/dev/null || true
+    ufw allow ssh 2>/dev/null || true
+    ufw --force enable 2>/dev/null || true
+    
+    # 删除安装标记
+    rm -f /var/log/vless-setup-updated 2>/dev/null || true
+    
+    # 重启 Nginx 应用默认配置
+    if systemctl is-active --quiet nginx; then
+        nginx -t && systemctl reload nginx || log_warn "Nginx 配置测试失败，请手动检查"
+    else
+        systemctl start nginx 2>/dev/null || true
+    fi
+    
+    log_success "配置删除完成！"
+    echo ""
+    echo "╔════════════════════════════════════════════════════════════════╗"
+    echo "║                        删除完成报告                              ║"
+    echo "╠════════════════════════════════════════════════════════════════╣"
+    echo "║ ✅ Xray 服务已删除"
+    echo "║ ✅ 配置文件已清理"
+    echo "║ ✅ SSL 证书已删除"
+    echo "║ ✅ 防火墙已重置为默认状态"
+    echo "║ ✅ Nginx 已恢复默认配置"
+    echo "║"
+    echo "║ 📁 备份文件位置："
+    echo "║   - Nginx 配置备份: /etc/nginx/sites-available/default.vless.backup.*"
+    echo "║"
+    echo "║ 🔧 如需重新安装，请重新运行此脚本"
+    echo "╚════════════════════════════════════════════════════════════════╝"
+    echo ""
+}
+
+# Firewall port management
+manage_firewall() {
+    while true; do
+        clear
+        echo "╔════════════════════════════════════════════════════════════════╗"
+        echo "║                        防火墙端口管理                            ║"
+        echo "╠════════════════════════════════════════════════════════════════╣"
+        
+        # 显示当前防火墙状态
+        local ufw_status=$(ufw status 2>/dev/null || echo "inactive")
+        echo "║ 防火墙状态: $ufw_status"
+        echo "║"
+        
+        if [[ "$ufw_status" != "inactive" ]]; then
+            echo "║ 当前开放的端口:"
+            ufw status numbered 2>/dev/null | grep -E "^\[[0-9]+\]" | while read line; do
+                echo "║   $line"
+            done | head -10
+            if [[ $(ufw status numbered 2>/dev/null | grep -c "^\[[0-9]+\]") -gt 10 ]]; then
+                echo "║   ... (更多端口，使用查看详情功能查看完整列表)"
+            fi
+        else
+            echo "║ 防火墙未启用"
+        fi
+        
+        echo "║"
+        echo "║ 可用操作:"
+        echo "║  1. 查看详细防火墙状态"
+        echo "║  2. 开放端口"
+        echo "║  3. 关闭端口"
+        echo "║  4. 启用/禁用防火墙"
+        echo "║  5. 重置防火墙为默认安全配置"
+        echo "║  6. 添加IP白名单"
+        echo "║  7. 删除防火墙规则"
+        echo "║  8. 返回主菜单"
+        echo "╚════════════════════════════════════════════════════════════════╝"
+        echo ""
+        
+        read -p "请选择操作 [1-8]: " fw_choice
+        
+        case $fw_choice in
+            1)
+                echo ""
+                echo "=== 详细防火墙状态 ==="
+                ufw status verbose 2>/dev/null || echo "防火墙未启用"
+                echo ""
+                echo "=== 端口监听状态 ==="
+                ss -tlnp | grep -E ":(22|80|443|8080|8081|8003)" || echo "未发现常用端口监听"
+                echo ""
+                read -p "按回车键继续..."
+                ;;
+            2)
+                echo ""
+                echo "开放端口选项:"
+                echo "1. HTTP (80/tcp)"
+                echo "2. HTTPS (443/tcp)"
+                echo "3. SSH (22/tcp)"
+                echo "4. 自定义端口"
+                echo ""
+                read -p "请选择 [1-4]: " port_choice
+                
+                case $port_choice in
+                    1)
+                        ufw allow 80/tcp
+                        log_success "HTTP 端口 (80) 已开放"
+                        ;;
+                    2)
+                        ufw allow 443/tcp
+                        log_success "HTTPS 端口 (443) 已开放"
+                        ;;
+                    3)
+                        ufw allow ssh
+                        log_success "SSH 端口已开放"
+                        ;;
+                    4)
+                        read -p "请输入端口号: " custom_port
+                        read -p "协议 (tcp/udp/both) [tcp]: " protocol
+                        protocol=${protocol:-tcp}
+                        
+                        if [[ "$protocol" == "both" ]]; then
+                            ufw allow $custom_port
+                        else
+                            ufw allow $custom_port/$protocol
+                        fi
+                        log_success "端口 $custom_port/$protocol 已开放"
+                        ;;
+                    *)
+                        log_error "无效选择"
+                        ;;
+                esac
+                read -p "按回车键继续..."
+                ;;
+            3)
+                echo ""
+                echo "当前防火墙规则:"
+                ufw status numbered 2>/dev/null || echo "防火墙未启用"
+                echo ""
+                read -p "请输入要删除的规则编号 (或输入端口号): " rule_input
+                
+                if [[ "$rule_input" =~ ^[0-9]+$ ]] && [[ ${#rule_input} -le 2 ]]; then
+                    # 规则编号
+                    echo "y" | ufw delete $rule_input 2>/dev/null && log_success "规则已删除" || log_error "删除失败"
+                else
+                    # 端口号
+                    ufw delete allow $rule_input 2>/dev/null && log_success "端口 $rule_input 已关闭" || log_error "关闭失败"
+                fi
+                read -p "按回车键继续..."
+                ;;
+            4)
+                if ufw status | grep -q "Status: active"; then
+                    read -p "确认禁用防火墙？(y/N): " disable_confirm
+                    if [[ "$disable_confirm" =~ ^[Yy]$ ]]; then
+                        ufw disable
+                        log_success "防火墙已禁用"
+                    fi
+                else
+                    ufw enable
+                    log_success "防火墙已启用"
+                fi
+                read -p "按回车键继续..."
+                ;;
+            5)
+                echo ""
+                echo -e "${RED}警告：这将重置所有防火墙规则！${NC}"
+                read -p "确认重置防火墙？(y/N): " reset_confirm
+                if [[ "$reset_confirm" =~ ^[Yy]$ ]]; then
+                    ufw --force reset
+                    ufw default deny incoming
+                    ufw default allow outgoing
+                    ufw allow ssh
+                    ufw --force enable
+                    log_success "防火墙已重置为默认安全配置"
+                fi
+                read -p "按回车键继续..."
+                ;;
+            6)
+                echo ""
+                read -p "请输入要加入白名单的IP地址: " whitelist_ip
+                if [[ -n "$whitelist_ip" ]]; then
+                    ufw allow from $whitelist_ip
+                    log_success "IP $whitelist_ip 已加入白名单"
+                fi
+                read -p "按回车键继续..."
+                ;;
+            7)
+                echo ""
+                echo "当前防火墙规则:"
+                ufw status numbered 2>/dev/null || echo "防火墙未启用"
+                echo ""
+                read -p "请输入要删除的规则编号: " del_rule
+                if [[ "$del_rule" =~ ^[0-9]+$ ]]; then
+                    echo "y" | ufw delete $del_rule 2>/dev/null && log_success "规则已删除" || log_error "删除失败"
+                fi
+                read -p "按回车键继续..."
+                ;;
+            8)
+                return 0
+                ;;
+            *)
+                log_error "无效选择，请输入 1-8"
+                sleep 2
+                ;;
+        esac
+    done
+}
+
 # Show current configuration
 show_config() {
     echo ""
@@ -1180,66 +1487,6 @@ run_connection_test() {
     echo "- 📋 如需进一步诊断，请查看 Xray 实时日志"
 }
 
-# Uninstall Xray (enhanced)
-uninstall_xray() {
-    echo -e "${RED}警告: 这将完全删除 Xray、Nginx 配置和相关文件！${NC}"
-    echo "此操作不可逆，请确认："
-    echo "1. 停止所有服务"
-    echo "2. 删除 Xray 程序"
-    echo "3. 删除配置文件"
-    echo "4. 删除 SSL 证书"
-    echo "5. 重置防火墙"
-    echo ""
-    read -p "输入 'UNINSTALL' 确认卸载: " confirm
-    
-    if [[ "$confirm" != "UNINSTALL" ]]; then
-        log_info "卸载操作已取消"
-        return
-    fi
-    
-    log_info "开始卸载 Xray..."
-    
-    # Stop services
-    systemctl stop xray nginx || true
-    systemctl disable xray nginx || true
-    
-    # Remove Xray
-    if command -v /usr/local/bin/xray &> /dev/null; then
-        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove --purge
-    fi
-    
-    # Remove configuration files
-    rm -rf /usr/local/etc/xray
-    rm -rf /var/log/xray
-    rm -rf /root/client-configs
-    rm -f /root/.vless-config
-    
-    # Backup and remove Nginx config
-    if [[ -f "$NGINX_CONF_PATH" ]]; then
-        cp "$NGINX_CONF_PATH" "$NGINX_CONF_PATH.backup.$(date +%Y%m%d)"
-        echo "# Default Nginx configuration" > "$NGINX_CONF_PATH"
-    fi
-    
-    # Remove SSL certificates
-    rm -rf /etc/ssl/private/${DOMAIN}.*
-    
-    # Remove ACME certificates
-    if [[ -d "/root/.acme.sh" ]]; then
-        /root/.acme.sh/acme.sh --remove -d "$DOMAIN" || true
-    fi
-    
-    # Reset firewall
-    ufw --force reset
-    ufw --force disable
-    
-    # Remove update marker
-    rm -f /var/log/vless-setup-updated
-    
-    log_success "Xray 卸载完成"
-    log_info "Nginx 配置已备份为: $NGINX_CONF_PATH.backup.$(date +%Y%m%d)"
-    log_info "如需重新安装，请重新运行此脚本"
-}
-
 # Restart Xray service
 restart_xray() {
     log_info "重启 Xray 服务..."
@@ -1267,7 +1514,7 @@ show_management_menu() {
     while true; do
         clear
         echo "╔════════════════════════════════════════════════════════════════╗"
-        echo "║                    VLESS 管理面板                               ║"
+        echo "║                    VLESS 管理面板 v${SCRIPT_VERSION}                     ║"
         echo "╠════════════════════════════════════════════════════════════════╣"
         echo "║  1. 查看配置信息"
         echo "║  2. 更换 VLESS UUID"
@@ -1276,12 +1523,13 @@ show_management_menu() {
         echo "║  5. 重启 Xray 服务"
         echo "║  6. 查看 Xray 实时日志"
         echo "║  7. 运行连接诊断"
-        echo "║  8. 卸载 Xray"
-        echo "║  9. 退出管理面板"
+        echo "║  8. 防火墙端口管理"
+        echo "║  9. 删除所有配置"
+        echo "║ 10. 退出管理面板"
         echo "╚════════════════════════════════════════════════════════════════╝"
         echo ""
         
-        read -p "请选择操作 [1-9]: " choice
+        read -p "请选择操作 [1-10]: " choice
         
         case $choice in
             1)
@@ -1312,15 +1560,18 @@ show_management_menu() {
                 read -p "按回车键继续..."
                 ;;
             8)
-                uninstall_xray
-                read -p "按回车键继续..."
+                manage_firewall
                 ;;
             9)
+                delete_configuration
+                read -p "按回车键继续..."
+                ;;
+            10)
                 log_info "退出管理面板"
                 exit 0
                 ;;
             *)
-                log_error "无效选择，请输入 1-9"
+                log_error "无效选择，请输入 1-10"
                 sleep 2
                 ;;
         esac
