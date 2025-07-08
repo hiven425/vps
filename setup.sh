@@ -428,21 +428,51 @@ setup_ssl_certificate() {
 
     # 无论 issue 的结果是新建(0)还是跳过(2)，都必须执行 install-cert
     log_info "正在确保证书被正确安装到 Nginx 配置目录..."
-    ~/.acme.sh/acme.sh --install-cert -d "$MY_DOMAIN" --ecc \
-        --key-file       /etc/ssl/private/private.key \
-        --fullchain-file /etc/ssl/private/fullchain.cer \
-        --reloadcmd      "sudo systemctl force-reload nginx"
 
-    if [ $? -ne 0 ]; then
-        log_error "执行 --install-cert 时出错，请检查 acme.sh 日志。"
-        log_info "显示最后 10 行 acme.sh 日志："
-        tail -n 10 /root/.acme.sh/acme.sh.log 2>/dev/null || echo "无法读取 acme.sh 日志文件"
+    # 先检查证书是否存在
+    if [ ! -f "/root/.acme.sh/${MY_DOMAIN}_ecc/fullchain.cer" ]; then
+        log_error "证书文件不存在: /root/.acme.sh/${MY_DOMAIN}_ecc/fullchain.cer"
+        log_info "可能的原因："
+        log_info "1. 域名格式不正确"
+        log_info "2. acme.sh 证书申请实际失败"
+        log_info "3. 证书文件路径变更"
         exit 1
     fi
 
+    # 执行证书安装，但不立即重载 nginx（避免 nginx 未配置时失败）
+    ~/.acme.sh/acme.sh --install-cert -d "$MY_DOMAIN" --ecc \
+        --key-file       /etc/ssl/private/private.key \
+        --fullchain-file /etc/ssl/private/fullchain.cer
+
+    INSTALL_STATUS=$?
+    if [ $INSTALL_STATUS -ne 0 ]; then
+        log_error "执行 --install-cert 时出错，状态码: $INSTALL_STATUS"
+        log_info "显示最后 10 行 acme.sh 日志："
+        tail -n 10 /root/.acme.sh/acme.sh.log 2>/dev/null || echo "无法读取 acme.sh 日志文件"
+        log_info "检查证书源文件："
+        ls -la "/root/.acme.sh/${MY_DOMAIN}_ecc/" 2>/dev/null || echo "证书目录不存在"
+        exit 1
+    fi
+
+    log_success "证书文件安装成功"
+
     # 设置正确的权限
-    chmod 600 /etc/ssl/private/private.key
-    chmod 644 /etc/ssl/private/fullchain.cer
+    log_info "设置证书文件权限..."
+    if [ -f "/etc/ssl/private/private.key" ]; then
+        chmod 600 /etc/ssl/private/private.key
+        log_info "✓ 私钥权限设置为 600"
+    else
+        log_error "私钥文件不存在: /etc/ssl/private/private.key"
+        exit 1
+    fi
+
+    if [ -f "/etc/ssl/private/fullchain.cer" ]; then
+        chmod 644 /etc/ssl/private/fullchain.cer
+        log_info "✓ 证书权限设置为 644"
+    else
+        log_error "证书文件不存在: /etc/ssl/private/fullchain.cer"
+        exit 1
+    fi
 
     log_success "证书已成功配置给 Nginx。"
 
