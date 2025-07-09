@@ -26,6 +26,11 @@ readonly BACKUP_DIR="/root/security-backups"
 readonly SSH_CUSTOM_CONFIG="/etc/ssh/sshd_config.d/99-security.conf"
 readonly FAIL2BAN_CONFIG="/etc/fail2ban/jail.local"
 
+# 配置变量
+ROOT_LOGIN_POLICY="prohibit-password"  # 默认允许root密钥登录
+NEW_SSH_PORT=""
+CURRENT_SSH_PORT=""
+
 # 日志函数
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
@@ -188,6 +193,183 @@ handle_cloud_ssh_configs() {
     fi
 }
 
+# 检查SSH密钥安全性
+check_ssh_keys() {
+    log_info "检查SSH密钥配置..."
+    
+    # 询问root登录策略
+    echo ""
+    echo -e "${YELLOW}Root登录策略:${NC}"
+    echo "1. 允许root密钥登录 (推荐用于VPS)"
+    echo "2. 完全禁止root登录 (仅允许普通用户)"
+    echo ""
+    
+    while true; do
+        read -p "请选择 [1-2]: " root_policy
+        case $root_policy in
+            1)
+                ROOT_LOGIN_POLICY="prohibit-password"
+                log_info "已选择：允许root密钥登录"
+                break
+                ;;
+            2)
+                ROOT_LOGIN_POLICY="no"
+                log_info "已选择：完全禁止root登录"
+                log_warn "请确保已创建普通用户账户"
+                break
+                ;;
+            *)
+                log_error "无效选择，请输入 1-2"
+                ;;
+        esac
+    done
+    
+    # 只有在允许root登录时才处理root密钥
+    if [[ "$ROOT_LOGIN_POLICY" == "prohibit-password" ]]; then
+        # 检查root用户的authorized_keys
+        if [[ -f "/root/.ssh/authorized_keys" ]]; then
+            local key_count=$(wc -l < "/root/.ssh/authorized_keys")
+            log_info "发现 $key_count 个已配置的SSH公钥"
+            
+            echo ""
+            echo -e "${YELLOW}SSH密钥安全选项:${NC}"
+            echo "1. 保留现有密钥 (使用云服务商提供的密钥)"
+            echo "2. 添加新密钥 (推荐: 使用您自己的密钥)"
+            echo "3. 替换所有密钥 (最安全: 完全使用新密钥)"
+            echo ""
+            
+            while true; do
+                read -p "请选择 [1-3]: " key_choice
+                case $key_choice in
+                    1)
+                        log_info "保留现有SSH密钥"
+                        return 0
+                        ;;
+                    2)
+                        add_ssh_key
+                        return 0
+                        ;;
+                    3)
+                        replace_ssh_keys
+                        return 0
+                        ;;
+                    *)
+                        log_error "无效选择，请输入 1-3"
+                        ;;
+                esac
+            done
+        else
+            log_warn "未找到SSH公钥文件，需要添加SSH密钥"
+            add_ssh_key
+        fi
+    else
+        log_info "已选择禁止root登录，跳过root密钥配置"
+    fi
+}
+
+# 添加SSH密钥
+add_ssh_key() {
+    log_info "添加新的SSH密钥..."
+    
+    echo ""
+    echo "请选择添加密钥的方式:"
+    echo "1. 粘贴公钥内容"
+    echo "2. 从文件读取公钥"
+    echo ""
+    
+    while true; do
+        read -p "请选择 [1-2]: " add_method
+        case $add_method in
+            1)
+                add_key_from_input
+                break
+                ;;
+            2)
+                add_key_from_file
+                break
+                ;;
+            *)
+                log_error "无效选择，请输入 1-2"
+                ;;
+        esac
+    done
+}
+
+# 从输入添加密钥
+add_key_from_input() {
+    echo ""
+    echo "请粘贴您的SSH公钥内容 (通常以 ssh-rsa 或 ssh-ed25519 开头):"
+    echo "提示: 可以使用 'ssh-keygen -t ed25519 -C \"your_email@example.com\"' 生成新密钥"
+    echo ""
+    
+    read -p "公钥内容: " public_key
+    
+    if [[ -z "$public_key" ]]; then
+        log_error "公钥内容不能为空"
+        return 1
+    fi
+    
+    # 验证公钥格式
+    if [[ ! "$public_key" =~ ^(ssh-rsa|ssh-ed25519|ssh-dss|ecdsa-sha2-) ]]; then
+        log_error "公钥格式不正确"
+        return 1
+    fi
+    
+    # 确保 .ssh 目录存在
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+    
+    # 添加公钥到 authorized_keys
+    echo "$public_key" >> /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+    
+    log_success "SSH公钥已添加"
+}
+
+# 从文件添加密钥
+add_key_from_file() {
+    echo ""
+    read -p "请输入公钥文件路径: " key_file
+    
+    if [[ ! -f "$key_file" ]]; then
+        log_error "文件不存在: $key_file"
+        return 1
+    fi
+    
+    # 确保 .ssh 目录存在
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+    
+    # 添加公钥到 authorized_keys
+    cat "$key_file" >> /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+    
+    log_success "SSH公钥已从文件添加: $key_file"
+}
+
+# 替换SSH密钥
+replace_ssh_keys() {
+    log_warn "这将删除所有现有的SSH密钥！"
+    read -p "确认要替换所有SSH密钥吗? (yes/no): " confirm
+    
+    if [[ "$confirm" != "yes" ]]; then
+        log_info "操作已取消"
+        return 0
+    fi
+    
+    # 备份现有密钥
+    if [[ -f "/root/.ssh/authorized_keys" ]]; then
+        cp "/root/.ssh/authorized_keys" "/root/.ssh/authorized_keys.backup.$(date +%Y%m%d_%H%M%S)"
+        log_info "现有密钥已备份"
+    fi
+    
+    # 清空现有密钥
+    > /root/.ssh/authorized_keys
+    
+    # 添加新密钥
+    add_ssh_key
+}
+
 # SSH安全加固
 harden_ssh() {
     echo ""
@@ -198,25 +380,24 @@ harden_ssh() {
     create_backup
     
     # 获取当前SSH端口
-    local current_port=$(detect_current_ssh_port)
-    log_info "当前SSH端口: $current_port"
+    CURRENT_SSH_PORT=$(detect_current_ssh_port)
+    log_info "当前SSH端口: $CURRENT_SSH_PORT"
     
     # 获取新端口
-    local new_port=""
     while true; do
-        read -p "请输入新的SSH端口 (1024-65535) [默认: 22222]: " new_port
-        new_port=${new_port:-22222}
+        read -p "请输入新的SSH端口 (1024-65535) [默认: 22222]: " NEW_SSH_PORT
+        NEW_SSH_PORT=${NEW_SSH_PORT:-22222}
         
-        if validate_port "$new_port"; then
-            log_success "新SSH端口设置为: $new_port"
+        if validate_port "$NEW_SSH_PORT"; then
+            log_success "新SSH端口设置为: $NEW_SSH_PORT"
             break
         else
-            if [[ ! "$new_port" =~ ^[0-9]+$ ]]; then
+            if [[ ! "$NEW_SSH_PORT" =~ ^[0-9]+$ ]]; then
                 log_error "端口必须是数字"
-            elif [[ $new_port -lt 1024 || $new_port -gt 65535 ]]; then
+            elif [[ $NEW_SSH_PORT -lt 1024 || $NEW_SSH_PORT -gt 65535 ]]; then
                 log_error "端口必须在 1024-65535 范围内"
             else
-                log_error "端口 $new_port 已被占用"
+                log_error "端口 $NEW_SSH_PORT 已被占用"
             fi
             log_info "请重新输入一个有效的端口号"
         fi
@@ -224,6 +405,9 @@ harden_ssh() {
     
     # 处理云服务商配置
     handle_cloud_ssh_configs
+    
+    # 检查SSH密钥配置
+    check_ssh_keys
     
     # 生成SSH安全配置
     log_info "生成SSH安全配置..."
@@ -234,10 +418,10 @@ harden_ssh() {
 # 生成时间: $(date)
 
 # 修改SSH端口
-Port $new_port
+Port $NEW_SSH_PORT
 
-# 禁用root密码登录，仅允许密钥认证
-PermitRootLogin prohibit-password
+# 禁用root密码登录，根据用户选择设置
+PermitRootLogin $ROOT_LOGIN_POLICY
 
 # 禁用所有密码认证
 PasswordAuthentication no
@@ -269,6 +453,11 @@ ClientAliveCountMax 2
 
 # 协议版本
 Protocol 2
+
+# 禁用不安全的认证方法
+ChallengeResponseAuthentication no
+KerberosAuthentication no
+GSSAPIAuthentication no
 EOF
     
     chmod 644 "$SSH_CUSTOM_CONFIG"
@@ -289,7 +478,7 @@ EOF
     
     if systemctl reload "$ssh_service"; then
         sleep 2
-        if ss -tlnp | grep -q ":$new_port "; then
+        if ss -tlnp | grep -q ":$NEW_SSH_PORT "; then
             log_success "SSH服务重启成功，新端口已生效"
         else
             log_warn "端口可能未生效，尝试完全重启..."
@@ -303,7 +492,7 @@ EOF
     
     # 保存配置
     mkdir -p "$CONFIG_DIR"
-    echo "SSH_PORT=$new_port" > "$CONFIG_FILE"
+    echo "SSH_PORT=$NEW_SSH_PORT" > "$CONFIG_FILE"
     
     # 最终确认和警告
     echo ""
@@ -313,16 +502,20 @@ EOF
     echo ""
     
     echo -e "${CYAN}配置摘要:${NC}"
-    echo "- SSH端口: $current_port → $new_port"
+    echo "- SSH端口: $CURRENT_SSH_PORT → $NEW_SSH_PORT"
     echo "- 密码认证: 已禁用"
     echo "- 密钥认证: 已启用"
-    echo "- Root登录: 仅限密钥"
+    if [[ "$ROOT_LOGIN_POLICY" == "prohibit-password" ]]; then
+        echo "- Root登录: 仅限密钥"
+    else
+        echo "- Root登录: 已禁用"
+    fi
     echo ""
     
     echo -e "${RED}重要警告:${NC}"
-    echo -e "${RED}1. SSH端口已更改为 $new_port${NC}"
-    echo -e "${RED}2. 请立即测试新端口连接: ssh -p $new_port user@server${NC}"
-    echo -e "${RED}3. 请确保防火墙允许端口 $new_port${NC}"
+    echo -e "${RED}1. SSH端口已更改为 $NEW_SSH_PORT${NC}"
+    echo -e "${RED}2. 请立即测试新端口连接: ssh -p $NEW_SSH_PORT user@server${NC}"
+    echo -e "${RED}3. 请确保防火墙允许端口 $NEW_SSH_PORT${NC}"
     echo -e "${RED}4. 在断开当前连接前，请务必测试新端口！${NC}"
     echo ""
     
@@ -356,7 +549,7 @@ install_fail2ban() {
     fi
     
     # 动态检测SSH端口
-    local ssh_port=$(detect_current_ssh_port)
+    local ssh_port="${NEW_SSH_PORT:-$(detect_current_ssh_port)}"
     log_info "检测到SSH端口: $ssh_port"
     
     # 生成Fail2ban配置
@@ -456,7 +649,7 @@ configure_ufw() {
     fi
     
     # 动态检测SSH端口
-    local ssh_port=$(detect_current_ssh_port)
+    local ssh_port="${NEW_SSH_PORT:-$(detect_current_ssh_port)}"
     log_info "检测到SSH端口: $ssh_port"
     
     # 显示即将执行的操作
@@ -580,8 +773,13 @@ run_all_hardening() {
     echo ""
     echo -e "${CYAN}配置摘要:${NC}"
     
-    local ssh_port=$(detect_current_ssh_port)
+    local ssh_port="${NEW_SSH_PORT:-$(detect_current_ssh_port)}"
     echo "- SSH端口: $ssh_port (密钥认证)"
+    if [[ "$ROOT_LOGIN_POLICY" == "prohibit-password" ]]; then
+        echo "- Root登录: 仅限密钥"
+    else
+        echo "- Root登录: 已禁用"
+    fi
     echo "- UFW防火墙: 已启用"
     echo "- Fail2ban: 已启用"
     echo ""
