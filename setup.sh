@@ -410,21 +410,24 @@ setup_ssl_certificate() {
         log_info "现有证书已删除"
     fi
 
-    # 智能证书申请流程 - 这是核心优化！
+    # 智能证书申请流程 - 增强调试版本
     log_info "正在检查并申请 SSL 证书..."
+    log_debug "执行命令: ~/.acme.sh/acme.sh --issue --dns dns_cf -d \"$MY_DOMAIN\" --ecc $ACME_FORCE_FLAG"
 
     # 执行 issue 命令，并附带可能的 --force 标志
     ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --ecc $ACME_FORCE_FLAG
 
     # 检查 issue 命令的退出状态码
     ISSUE_STATUS=$?
+    log_debug "acme.sh issue 命令退出状态码: $ISSUE_STATUS"
 
     if [ "$ISSUE_STATUS" -eq 0 ]; then
         log_success "新证书已成功签发！"
     elif [ "$ISSUE_STATUS" -eq 2 ]; then
         # 这是关键的用户沟通！
-        log_info "证书已存在且在有效期内。跳过续期是正确的行为。"
+        log_success "证书已存在且在有效期内，跳过申请是正确的行为。"
         log_info "这不是错误 - acme.sh 智能地避免了不必要的证书申请。"
+        log_info "如需强制更新证书，请使用: bash setup.sh --force"
     else
         log_error "证书申请失败，状态码: $ISSUE_STATUS"
         log_error "请检查以下可能的原因："
@@ -448,15 +451,24 @@ setup_ssl_certificate() {
         log_info "1. 域名格式不正确"
         log_info "2. acme.sh 证书申请实际失败"
         log_info "3. 证书文件路径变更"
+        log_info "当前 acme.sh 目录结构："
+        ls -la "/root/.acme.sh/" | head -10
+        if [[ -d "/root/.acme.sh/${MY_DOMAIN}_ecc/" ]]; then
+            log_info "证书目录存在，查看内容："
+            ls -la "/root/.acme.sh/${MY_DOMAIN}_ecc/"
+        fi
         exit 1
     fi
 
+    log_debug "源证书文件存在，开始安装..."
     # 执行证书安装，但不立即重载 nginx（避免 nginx 未配置时失败）
     ~/.acme.sh/acme.sh --install-cert -d "$MY_DOMAIN" --ecc \
         --key-file       /etc/ssl/private/private.key \
         --fullchain-file /etc/ssl/private/fullchain.cer
 
     INSTALL_STATUS=$?
+    log_debug "证书安装命令退出状态码: $INSTALL_STATUS"
+    
     if [ $INSTALL_STATUS -ne 0 ]; then
         log_error "执行 --install-cert 时出错，状态码: $INSTALL_STATUS"
         log_info "显示最后 10 行 acme.sh 日志："
@@ -515,6 +527,12 @@ configure_xray() {
     mkdir -p /usr/local/etc/xray
     
     # 生成 Xray 配置文件 (严格按照最终确定的正确逻辑)
+    log_info "生成 Xray 配置文件..."
+    log_debug "UUID: $UUID"
+    log_debug "MY_DOMAIN: $MY_DOMAIN"
+    log_debug "PRIVATE_KEY: ${PRIVATE_KEY:0:10}..."
+    log_debug "SHORT_ID: $SHORT_ID"
+    
     cat > /usr/local/etc/xray/config.json << EOF
 {
   "log": {
@@ -599,6 +617,24 @@ configure_xray() {
   }
 }
 EOF
+    
+    # 验证生成的配置文件
+    log_debug "验证生成的配置文件..."
+    if [[ ! -f "/usr/local/etc/xray/config.json" ]]; then
+        log_error "配置文件生成失败"
+        exit 1
+    fi
+    
+    # 检查关键变量是否正确替换
+    if grep -q '\$UUID\|\$MY_DOMAIN\|\$PRIVATE_KEY\|\$SHORT_ID' /usr/local/etc/xray/config.json; then
+        log_error "配置文件中存在未替换的变量"
+        log_info "请检查以下变量是否正确设置："
+        log_info "UUID: $UUID"
+        log_info "MY_DOMAIN: $MY_DOMAIN"
+        log_info "PRIVATE_KEY: ${PRIVATE_KEY:0:10}..."
+        log_info "SHORT_ID: $SHORT_ID"
+        exit 1
+    fi
     
     # 设置权限
     chmod 644 /usr/local/etc/xray/config.json
@@ -758,10 +794,31 @@ start_services() {
 
     # 测试 Xray 配置
     log_info "测试 Xray 配置文件语法..."
+    log_debug "检查 Xray 配置文件是否存在: /usr/local/etc/xray/config.json"
+    
+    if [[ ! -f "/usr/local/etc/xray/config.json" ]]; then
+        log_error "Xray 配置文件不存在: /usr/local/etc/xray/config.json"
+        exit 1
+    fi
+    
+    log_debug "验证 JSON 格式..."
+    if ! jq empty /usr/local/etc/xray/config.json 2>/dev/null; then
+        log_error "Xray 配置文件 JSON 格式错误！"
+        log_info "使用 jq 验证 JSON 格式："
+        jq empty /usr/local/etc/xray/config.json || true
+        log_info "配置文件位置: /usr/local/etc/xray/config.json"
+        log_info "显示配置文件内容："
+        cat /usr/local/etc/xray/config.json
+        exit 1
+    fi
+    
+    log_debug "使用 xray test 验证配置..."
     if ! /usr/local/bin/xray test -config /usr/local/etc/xray/config.json; then
         log_error "Xray 配置测试失败！"
         log_error "请检查 Xray 配置文件语法错误"
         log_info "配置文件位置: /usr/local/etc/xray/config.json"
+        log_info "显示配置文件内容："
+        cat /usr/local/etc/xray/config.json
         exit 1
     fi
     log_success "✓ Xray 配置文件语法正确"
