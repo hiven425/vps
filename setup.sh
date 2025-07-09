@@ -589,7 +589,20 @@ configure_xray() {
     log_debug "PRIVATE_KEY: ${PRIVATE_KEY:0:10}..."
     log_debug "SHORT_ID: $SHORT_ID"
     
-    cat > /usr/local/etc/xray/config.json << EOF
+    # 验证关键变量是否都已设置
+    if [[ -z "$UUID" || -z "$MY_DOMAIN" || -z "$PRIVATE_KEY" || -z "$SHORT_ID" ]]; then
+        log_error "关键变量未设置！"
+        log_error "UUID: ${UUID:-未设置}"
+        log_error "MY_DOMAIN: ${MY_DOMAIN:-未设置}"
+        log_error "PRIVATE_KEY: ${PRIVATE_KEY:+已设置}"
+        log_error "SHORT_ID: ${SHORT_ID:-未设置}"
+        exit 1
+    fi
+    
+    # 使用临时文件生成配置，避免 heredoc 可能的问题
+    TEMP_CONFIG="/tmp/xray_config_$$.json"
+    
+cat > "$TEMP_CONFIG" << EOF
 {
   "log": {
     "loglevel": "warning"
@@ -674,23 +687,47 @@ configure_xray() {
 }
 EOF
     
-    # 验证生成的配置文件
-    log_debug "验证生成的配置文件..."
-    if [[ ! -f "/usr/local/etc/xray/config.json" ]]; then
-        log_error "配置文件生成失败"
+    # 验证临时配置文件是否生成成功
+    if [[ ! -f "$TEMP_CONFIG" ]]; then
+        log_error "临时配置文件生成失败"
         exit 1
     fi
     
+    # 验证 JSON 格式
+    if command -v jq &> /dev/null; then
+        if ! jq empty "$TEMP_CONFIG" 2>/dev/null; then
+            log_error "生成的配置文件 JSON 格式错误！"
+            log_info "临时配置文件内容："
+            cat "$TEMP_CONFIG"
+            rm -f "$TEMP_CONFIG"
+            exit 1
+        fi
+    fi
+    
     # 检查关键变量是否正确替换
-    if grep -q '\$UUID\|\$MY_DOMAIN\|\$PRIVATE_KEY\|\$SHORT_ID' /usr/local/etc/xray/config.json; then
+    if grep -q '\$UUID\|\$MY_DOMAIN\|\$PRIVATE_KEY\|\$SHORT_ID' "$TEMP_CONFIG"; then
         log_error "配置文件中存在未替换的变量"
         log_info "请检查以下变量是否正确设置："
         log_info "UUID: $UUID"
         log_info "MY_DOMAIN: $MY_DOMAIN"
         log_info "PRIVATE_KEY: ${PRIVATE_KEY:0:10}..."
         log_info "SHORT_ID: $SHORT_ID"
+        log_info "临时配置文件内容："
+        cat "$TEMP_CONFIG"
+        rm -f "$TEMP_CONFIG"
         exit 1
     fi
+    
+    # 移动到最终位置
+    mv "$TEMP_CONFIG" /usr/local/etc/xray/config.json
+    
+    # 验证最终配置文件
+    if [[ ! -f "/usr/local/etc/xray/config.json" ]]; then
+        log_error "配置文件移动失败"
+        exit 1
+    fi
+    
+    log_success "Xray 配置文件生成成功"
     
     # 设置权限
     chmod 644 /usr/local/etc/xray/config.json
@@ -857,24 +894,88 @@ start_services() {
         exit 1
     fi
     
+    log_debug "显示生成的配置文件内容（前50行）："
+    head -50 /usr/local/etc/xray/config.json
+    echo ""
+    
     log_debug "验证 JSON 格式..."
-    if ! jq empty /usr/local/etc/xray/config.json 2>/dev/null; then
-        log_error "Xray 配置文件 JSON 格式错误！"
-        log_info "使用 jq 验证 JSON 格式："
-        jq empty /usr/local/etc/xray/config.json || true
-        log_info "配置文件位置: /usr/local/etc/xray/config.json"
-        log_info "显示配置文件内容："
-        cat /usr/local/etc/xray/config.json
+    if command -v jq &> /dev/null; then
+        if ! jq empty /usr/local/etc/xray/config.json 2>/dev/null; then
+            log_error "Xray 配置文件 JSON 格式错误！"
+            log_info "使用 jq 验证 JSON 格式："
+            jq empty /usr/local/etc/xray/config.json || true
+            log_info "配置文件位置: /usr/local/etc/xray/config.json"
+            exit 1
+        else
+            log_success "✓ JSON 格式验证通过"
+        fi
+    else
+        log_warn "jq 工具未安装，跳过 JSON 格式验证"
+    fi
+    
+    log_debug "检查 Xray 二进制文件..."
+    if [[ ! -f "/usr/local/bin/xray" ]]; then
+        log_error "Xray 二进制文件不存在: /usr/local/bin/xray"
         exit 1
     fi
     
+    log_debug "Xray 版本信息："
+    /usr/local/bin/xray version 2>/dev/null || log_warn "无法获取 Xray 版本信息"
+    
     log_debug "使用 xray test 验证配置..."
-    if ! /usr/local/bin/xray test -config /usr/local/etc/xray/config.json; then
-        log_error "Xray 配置测试失败！"
-        log_error "请检查 Xray 配置文件语法错误"
+    # 获取详细的错误输出
+    XRAY_TEST_OUTPUT=$(/usr/local/bin/xray test -config /usr/local/etc/xray/config.json 2>&1)
+    XRAY_TEST_STATUS=$?
+    
+    log_debug "Xray 测试输出："
+    echo "$XRAY_TEST_OUTPUT"
+    log_debug "Xray 测试退出状态码: $XRAY_TEST_STATUS"
+    
+    if [ $XRAY_TEST_STATUS -ne 0 ]; then
+        log_error "Xray 配置测试失败！退出状态码: $XRAY_TEST_STATUS"
+        log_error "详细错误信息："
+        echo "$XRAY_TEST_OUTPUT"
         log_info "配置文件位置: /usr/local/etc/xray/config.json"
-        log_info "显示配置文件内容："
-        cat /usr/local/etc/xray/config.json
+        log_info "尝试使用简化的配置进行测试..."
+        
+        # 生成一个最小的测试配置
+        cat > /tmp/xray_test.json << 'EOF'
+{
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 1080,
+      "protocol": "socks"
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom"
+    }
+  ]
+}
+EOF
+        
+        log_info "测试最小配置..."
+        if /usr/local/bin/xray test -config /tmp/xray_test.json; then
+            log_info "最小配置测试通过，问题可能在我们的配置中"
+            log_info "检查变量替换情况..."
+            
+            # 检查是否有未替换的变量
+            if grep -n '\$[A-Z_]*' /usr/local/etc/xray/config.json; then
+                log_error "发现未替换的变量！"
+            fi
+            
+            # 检查关键字段
+            log_info "检查关键配置字段..."
+            grep -n "\"id\":" /usr/local/etc/xray/config.json || log_warn "未找到 UUID 配置"
+            grep -n "\"privateKey\":" /usr/local/etc/xray/config.json || log_warn "未找到 privateKey 配置"
+            grep -n "\"serverNames\":" /usr/local/etc/xray/config.json || log_warn "未找到 serverNames 配置"
+        else
+            log_error "连最小配置都失败，Xray 安装可能有问题"
+        fi
+        
+        rm -f /tmp/xray_test.json
         exit 1
     fi
     log_success "✓ Xray 配置文件语法正确"
