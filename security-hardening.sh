@@ -480,20 +480,53 @@ restart_ssh_service() {
     
     log_info "检测到SSH服务名称: $ssh_service"
     
+    # 先验证端口是否已在监听旧端口
+    log_info "当前SSH服务监听端口："
+    ss -tlnp | grep -E ":(22|$CURRENT_SSH_PORT) " || log_warn "未检测到SSH服务监听"
+    
     # 使用reload而不是restart，保持现有连接
     if systemctl reload "$ssh_service"; then
-        log_success "SSH服务重启成功"
+        log_info "SSH配置重载完成，等待3秒..."
+        sleep 3
+        
+        # 检查新端口是否监听
+        if ss -tlnp | grep -q ":$NEW_SSH_PORT "; then
+            log_success "SSH服务重启成功，新端口已监听"
+        else
+            log_warn "新端口未监听，尝试完全重启..."
+            systemctl restart "$ssh_service"
+            sleep 3
+            
+            if ss -tlnp | grep -q ":$NEW_SSH_PORT "; then
+                log_success "SSH服务完全重启成功"
+            else
+                log_error "SSH服务重启后新端口仍未监听"
+                return 1
+            fi
+        fi
+        
         log_warn "请注意: SSH端口已从 $CURRENT_SSH_PORT 更改为 $NEW_SSH_PORT"
         log_warn "请确保在断开连接前测试新端口: ssh -p $NEW_SSH_PORT user@server"
+        
+        # 显示当前监听端口
+        log_info "当前SSH监听端口："
+        ss -tlnp | grep -E ":(22|$CURRENT_SSH_PORT|$NEW_SSH_PORT) "
+        
     else
-        log_error "SSH服务重启失败"
+        log_error "SSH配置重载失败"
         
         # 如果reload失败，尝试restart
         log_info "尝试完全重启SSH服务..."
         if systemctl restart "$ssh_service"; then
-            log_success "SSH服务重启成功"
-            log_warn "请注意: SSH端口已从 $CURRENT_SSH_PORT 更改为 $NEW_SSH_PORT"
-            log_warn "请确保在断开连接前测试新端口: ssh -p $NEW_SSH_PORT user@server"
+            sleep 3
+            if ss -tlnp | grep -q ":$NEW_SSH_PORT "; then
+                log_success "SSH服务重启成功"
+                log_warn "请注意: SSH端口已从 $CURRENT_SSH_PORT 更改为 $NEW_SSH_PORT"
+                log_warn "请确保在断开连接前测试新端口: ssh -p $NEW_SSH_PORT user@server"
+            else
+                log_error "SSH服务重启后端口仍未监听"
+                return 1
+            fi
         else
             log_error "SSH服务重启失败"
             return 1
