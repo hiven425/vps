@@ -414,71 +414,127 @@ setup_ssl_certificate() {
     log_info "正在检查并申请 SSL 证书..."
     log_debug "执行命令: ~/.acme.sh/acme.sh --issue --dns dns_cf -d \"$MY_DOMAIN\" --ecc $ACME_FORCE_FLAG"
 
-    # 执行 issue 命令，并附带可能的 --force 标志
-    ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --ecc $ACME_FORCE_FLAG
-
-    # 检查 issue 命令的退出状态码
-    ISSUE_STATUS=$?
-    log_debug "acme.sh issue 命令退出状态码: $ISSUE_STATUS"
-
-    if [ "$ISSUE_STATUS" -eq 0 ]; then
-        log_success "新证书已成功签发！"
-    elif [ "$ISSUE_STATUS" -eq 2 ]; then
-        # 这是关键的用户沟通！
-        log_success "证书已存在且在有效期内，跳过申请是正确的行为。"
-        log_info "这不是错误 - acme.sh 智能地避免了不必要的证书申请。"
-        log_info "如需强制更新证书，请使用: bash setup.sh --force"
+    # 如果不是强制模式，先尝试使用 staging 环境测试
+    if [[ -z "$ACME_FORCE_FLAG" ]]; then
+        log_info "首先使用 staging 环境测试证书申请..."
+        ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --log --staging
+        STAGING_STATUS=$?
+        log_debug "staging 测试状态码: $STAGING_STATUS"
+        
+        if [ "$STAGING_STATUS" -eq 0 ]; then
+            log_success "staging 环境测试通过，现在申请正式证书..."
+            # 删除 staging 证书
+            rm -rf "/root/.acme.sh/${MY_DOMAIN}_ecc"
+            # 申请正式证书
+            ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --log --force
+            ISSUE_STATUS=$?
+        elif [ "$STAGING_STATUS" -eq 2 ]; then
+            log_info "staging 环境显示证书已存在，直接尝试正式环境..."
+            ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --ecc
+            ISSUE_STATUS=$?
+        else
+            log_error "staging 环境测试失败，状态码: $STAGING_STATUS"
+            log_info "删除可能损坏的证书文件并重试..."
+            rm -rf "/root/.acme.sh/${MY_DOMAIN}_ecc"
+            ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --log --force
+            ISSUE_STATUS=$?
+        fi
     else
-        log_error "证书申请失败，状态码: $ISSUE_STATUS"
-        log_error "请检查以下可能的原因："
-        log_error "1. Cloudflare API Token 是否正确"
-        log_error "2. 域名 DNS 是否指向 Cloudflare"
-        log_error "3. 网络连接是否正常"
-        log_info "详细错误信息请查看: /root/.acme.sh/acme.sh.log"
-        echo ""
-        log_info "显示最后 10 行 acme.sh 日志："
-        tail -n 10 /root/.acme.sh/acme.sh.log 2>/dev/null || echo "无法读取 acme.sh 日志文件"
-        exit 1
+        # 强制模式直接申请
+        ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --ecc $ACME_FORCE_FLAG
+        ISSUE_STATUS=$?
     fi
 
-    # 无论 issue 的结果是新建(0)还是跳过(2)，都必须执行 install-cert
-    log_info "正在确保证书被正确安装到 Nginx 配置目录..."
+    # 检查最终的申请状态
+    log_debug "最终申请状态码: $ISSUE_STATUS"
+
+    if [ "$ISSUE_STATUS" -eq 0 ]; then
+        log_success "证书申请成功！"
+    elif [ "$ISSUE_STATUS" -eq 2 ]; then
+        log_info "证书已存在且有效，现在验证是否可以正常安装..."
+        # 验证证书文件是否存在
+        if [ ! -f "/root/.acme.sh/${MY_DOMAIN}_ecc/fullchain.cer" ]; then
+            log_warn "证书文件不存在，删除证书目录并重新申请..."
+            rm -rf "/root/.acme.sh/${MY_DOMAIN}_ecc"
+            ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --log --force
+            ISSUE_STATUS=$?
+            if [ "$ISSUE_STATUS" -ne 0 ]; then
+                log_error "强制重新申请失败，状态码: $ISSUE_STATUS"
+                exit 1
+            fi
+        fi
+    else
+        log_error "证书申请失败，状态码: $ISSUE_STATUS"
+        log_info "删除可能损坏的证书目录并重试..."
+        rm -rf "/root/.acme.sh/${MY_DOMAIN}_ecc"
+        ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --log --force
+        RETRY_STATUS=$?
+        if [ "$RETRY_STATUS" -ne 0 ]; then
+            log_error "重试申请失败，状态码: $RETRY_STATUS"
+            log_error "请检查以下可能的原因："
+            log_error "1. Cloudflare API Token 是否正确"
+            log_error "2. 域名 DNS 是否指向 Cloudflare"
+            log_error "3. 网络连接是否正常"
+            log_info "详细错误信息请查看: /root/.acme.sh/acme.sh.log"
+            echo ""
+            log_info "显示最后 10 行 acme.sh 日志："
+            tail -n 10 /root/.acme.sh/acme.sh.log 2>/dev/null || echo "无法读取 acme.sh 日志文件"
+            exit 1
+        fi
+    fi
+
+    # 无论 issue 的结果如何，都必须执行 install-cert
+    log_info "正在安装证书到 Nginx 配置目录..."
 
     # 先检查证书是否存在
     if [ ! -f "/root/.acme.sh/${MY_DOMAIN}_ecc/fullchain.cer" ]; then
         log_error "证书文件不存在: /root/.acme.sh/${MY_DOMAIN}_ecc/fullchain.cer"
-        log_info "可能的原因："
-        log_info "1. 域名格式不正确"
-        log_info "2. acme.sh 证书申请实际失败"
-        log_info "3. 证书文件路径变更"
-        log_info "当前 acme.sh 目录结构："
-        ls -la "/root/.acme.sh/" | head -10
-        if [[ -d "/root/.acme.sh/${MY_DOMAIN}_ecc/" ]]; then
-            log_info "证书目录存在，查看内容："
-            ls -la "/root/.acme.sh/${MY_DOMAIN}_ecc/"
+        log_info "删除证书目录并重新申请..."
+        rm -rf "/root/.acme.sh/${MY_DOMAIN}_ecc"
+        ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --log --force
+        if [ $? -ne 0 ]; then
+            log_error "重新申请证书失败"
+            exit 1
         fi
-        exit 1
     fi
 
     log_debug "源证书文件存在，开始安装..."
-    # 执行证书安装，但不立即重载 nginx（避免 nginx 未配置时失败）
+    # 使用完整的安装命令，包含自动重载
     ~/.acme.sh/acme.sh --install-cert -d "$MY_DOMAIN" --ecc \
         --key-file       /etc/ssl/private/private.key \
-        --fullchain-file /etc/ssl/private/fullchain.cer
+        --fullchain-file /etc/ssl/private/fullchain.cer \
+        --reloadcmd      "sudo systemctl force-reload nginx"
 
     INSTALL_STATUS=$?
     log_debug "证书安装命令退出状态码: $INSTALL_STATUS"
     
     if [ $INSTALL_STATUS -ne 0 ]; then
         log_error "执行 --install-cert 时出错，状态码: $INSTALL_STATUS"
-        log_info "显示最后 10 行 acme.sh 日志："
-        tail -n 10 /root/.acme.sh/acme.sh.log 2>/dev/null || echo "无法读取 acme.sh 日志文件"
-        log_info "检查证书源文件："
-        ls -la "/root/.acme.sh/${MY_DOMAIN}_ecc/" 2>/dev/null || echo "证书目录不存在"
-        exit 1
+        log_info "尝试删除证书目录并重新申请..."
+        rm -rf "/root/.acme.sh/${MY_DOMAIN}_ecc"
+        
+        # 重新申请证书
+        ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --log --force
+        if [ $? -eq 0 ]; then
+            log_info "证书重新申请成功，再次尝试安装..."
+            ~/.acme.sh/acme.sh --install-cert -d "$MY_DOMAIN" --ecc \
+                --key-file       /etc/ssl/private/private.key \
+                --fullchain-file /etc/ssl/private/fullchain.cer \
+                --reloadcmd      "sudo systemctl force-reload nginx"
+            
+            if [ $? -ne 0 ]; then
+                log_error "重新安装证书仍然失败"
+                log_info "显示最后 10 行 acme.sh 日志："
+                tail -n 10 /root/.acme.sh/acme.sh.log 2>/dev/null || echo "无法读取 acme.sh 日志文件"
+                exit 1
+            fi
+        else
+            log_error "重新申请证书失败"
+            exit 1
+        fi
     fi
 
-    log_success "证书文件安装成功"
+    log_success "证书安装成功"
 
     # 设置正确的权限
     log_info "设置证书文件权限..."
