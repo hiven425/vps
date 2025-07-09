@@ -114,6 +114,151 @@ get_current_ssh_port() {
     log_info "当前SSH端口: $CURRENT_SSH_PORT"
 }
 
+# 检查SSH密钥安全性
+check_ssh_keys() {
+    log_info "检查SSH密钥配置..."
+    
+    # 检查root用户的authorized_keys
+    if [[ -f "/root/.ssh/authorized_keys" ]]; then
+        local key_count=$(wc -l < "/root/.ssh/authorized_keys")
+        log_info "发现 $key_count 个已配置的SSH公钥"
+        
+        echo ""
+        echo -e "${YELLOW}SSH密钥安全选项:${NC}"
+        echo "1. 保留现有密钥 (使用云服务商提供的密钥)"
+        echo "2. 添加新密钥 (推荐: 使用您自己的密钥)"
+        echo "3. 替换所有密钥 (最安全: 完全使用新密钥)"
+        echo ""
+        
+        while true; do
+            read -p "请选择 [1-3]: " key_choice
+            case $key_choice in
+                1)
+                    log_info "保留现有SSH密钥"
+                    return 0
+                    ;;
+                2)
+                    add_ssh_key
+                    return 0
+                    ;;
+                3)
+                    replace_ssh_keys
+                    return 0
+                    ;;
+                *)
+                    log_error "无效选择，请输入 1-3"
+                    ;;
+            esac
+        done
+    else
+        log_warn "未找到SSH公钥文件，需要添加SSH密钥"
+        add_ssh_key
+    fi
+}
+
+# 添加SSH密钥
+add_ssh_key() {
+    log_info "添加新的SSH密钥..."
+    
+    echo ""
+    echo "请选择添加密钥的方式:"
+    echo "1. 粘贴公钥内容"
+    echo "2. 从文件读取公钥"
+    echo ""
+    
+    while true; do
+        read -p "请选择 [1-2]: " add_method
+        case $add_method in
+            1)
+                add_key_from_input
+                break
+                ;;
+            2)
+                add_key_from_file
+                break
+                ;;
+            *)
+                log_error "无效选择，请输入 1-2"
+                ;;
+        esac
+    done
+}
+
+# 从输入添加密钥
+add_key_from_input() {
+    echo ""
+    echo "请粘贴您的SSH公钥内容 (通常以 ssh-rsa 或 ssh-ed25519 开头):"
+    echo "提示: 可以使用 'ssh-keygen -t ed25519 -C \"your_email@example.com\"' 生成新密钥"
+    echo ""
+    
+    read -p "公钥内容: " public_key
+    
+    if [[ -z "$public_key" ]]; then
+        log_error "公钥内容不能为空"
+        return 1
+    fi
+    
+    # 验证公钥格式
+    if [[ ! "$public_key" =~ ^(ssh-rsa|ssh-ed25519|ssh-dss|ecdsa-sha2-) ]]; then
+        log_error "公钥格式不正确"
+        return 1
+    fi
+    
+    # 确保 .ssh 目录存在
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+    
+    # 添加公钥到 authorized_keys
+    echo "$public_key" >> /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+    
+    log_success "SSH公钥已添加"
+}
+
+# 从文件添加密钥
+add_key_from_file() {
+    echo ""
+    read -p "请输入公钥文件路径: " key_file
+    
+    if [[ ! -f "$key_file" ]]; then
+        log_error "文件不存在: $key_file"
+        return 1
+    fi
+    
+    # 确保 .ssh 目录存在
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+    
+    # 添加公钥到 authorized_keys
+    cat "$key_file" >> /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+    
+    log_success "SSH公钥已从文件添加: $key_file"
+}
+
+# 替换SSH密钥
+replace_ssh_keys() {
+    log_warn "这将删除所有现有的SSH密钥！"
+    read -p "确认要替换所有SSH密钥吗? (yes/no): " confirm
+    
+    if [[ "$confirm" != "yes" ]]; then
+        log_info "操作已取消"
+        return 0
+    fi
+    
+    # 备份现有密钥
+    if [[ -f "/root/.ssh/authorized_keys" ]]; then
+        cp "/root/.ssh/authorized_keys" "/root/.ssh/authorized_keys.backup.$(date +%Y%m%d_%H%M%S)"
+        log_info "现有密钥已备份"
+    fi
+    
+    # 清空现有密钥
+    > /root/.ssh/authorized_keys
+    
+    # 添加新密钥
+    add_ssh_key
+}
+
 # 收集SSH端口配置
 collect_ssh_port() {
     log_info "配置SSH端口..."
@@ -578,10 +723,11 @@ show_completion_info() {
     echo -e "${YELLOW}重要提醒:${NC}"
     echo "1. SSH端口已更改为 $NEW_SSH_PORT"
     echo "2. 请立即测试新端口连接: ssh -p $NEW_SSH_PORT user@server"
-    echo "3. 确保已配置SSH密钥认证"
+    echo "3. SSH密钥认证已启用，密码认证已禁用"
     echo "4. 配置备份位置: $BACKUP_DIR"
+    echo "5. SSH密钥备份位置: /root/.ssh/authorized_keys.backup.*"
     echo ""
-    echo -e "${RED}安全警告: 在断开当前连接前，请务必测试新的SSH端口！${NC}"
+    echo -e "${RED}安全警告: 在断开当前连接前，请务必测试新的SSH端口和密钥认证！${NC}"
 }
 
 # 主函数
@@ -608,6 +754,7 @@ main() {
     # 第一阶段：SSH安全加固
     log_info "=== 第一阶段：SSH安全加固 ==="
     collect_ssh_port
+    check_ssh_keys
     configure_ssh_security
     
     if test_ssh_config; then
