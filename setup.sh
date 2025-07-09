@@ -210,8 +210,7 @@ show_main_menu() {
     echo -e "${WHITE}║  4. 检查服务运行状态                                            ║${NC}"
     echo -e "${WHITE}║  5. 查看客户端连接信息                                          ║${NC}"
     echo -e "${WHITE}║  6. 卸载服务                                                    ║${NC}"
-    echo -e "${WHITE}║  7. 修改SSH端口                                                 ║${NC}"
-    echo -e "${WHITE}║  8. 退出                                                        ║${NC}"
+    echo -e "${WHITE}║  7. 退出                                                        ║${NC}"
     echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${YELLOW}║  提示: 支持 bash setup.sh --force 强制重新申请证书             ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════╝${NC}"
@@ -1849,109 +1848,6 @@ uninstall_service() {
 }
 
 # ========================================
-# 功能7: 修改SSH端口
-# ========================================
-
-change_ssh_port() {
-    clear
-    echo -e "${CYAN}=== 修改 SSH 端口 ===${NC}"
-    echo ""
-    
-    # 显示当前 SSH 配置
-    echo -e "${BLUE}当前 SSH 配置:${NC}"
-    echo "端口: $(sudo sshd -T | grep -i "Port" | cut -d' ' -f2)"
-    echo "Root登录: $(sudo sshd -T | grep -i "PermitRootLogin" | cut -d' ' -f2)"
-    echo "密码认证: $(sudo sshd -T | grep -i "PasswordAuthentication" | cut -d' ' -f2)"
-    echo ""
-    
-    # 获取新端口
-    while true; do
-        read -p "请输入新的 SSH 端口 (1024-65535): " new_port
-        if [[ "$new_port" =~ ^[0-9]+$ ]] && [ "$new_port" -ge 1024 ] && [ "$new_port" -le 65535 ]; then
-            break
-        else
-            log_error "端口无效，请输入 1024-65535 之间的数字"
-        fi
-    done
-    
-    echo ""
-    log_warn "修改 SSH 端口可能导致连接中断！"
-    read -p "确认修改 SSH 端口到 $new_port ? (y/N): " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        log_info "操作已取消"
-        read -p "按回车键返回主菜单..."
-        return 0
-    fi
-    
-    log_info "修改 SSH 端口到 $new_port ..."
-    
-    # 备份 SSH 配置
-    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
-    
-    # 修改 SSH 配置
-    sed -i "s/^#*Port .*/Port $new_port/" /etc/ssh/sshd_config
-    
-    # 确保配置中有 Port 行
-    if ! grep -q "^Port $new_port" /etc/ssh/sshd_config; then
-        echo "Port $new_port" >> /etc/ssh/sshd_config
-    fi
-    
-    # 测试 SSH 配置
-    if ! sshd -t; then
-        log_error "SSH 配置测试失败，恢复备份"
-        cp /etc/ssh/sshd_config.backup /etc/ssh/sshd_config
-        read -p "按回车键返回主菜单..."
-        return 1
-    fi
-    
-    # 更新防火墙规则
-    log_info "更新防火墙规则..."
-    if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-        # 获取当前 SSH 端口
-        if load_config; then
-            local old_port="$SSH_PORT"
-        else
-            old_port="22"
-        fi
-        
-        # 添加新端口
-        ufw allow "$new_port/tcp"
-        
-        # 询问是否删除旧端口
-        if [[ "$old_port" != "$new_port" ]]; then
-            read -p "是否从防火墙中删除旧的 SSH 端口 $old_port ? (y/N): " remove_old
-            if [[ "$remove_old" =~ ^[Yy]$ ]]; then
-                ufw delete allow "$old_port/tcp"
-            fi
-        fi
-    fi
-    
-    # 更新 fail2ban 配置 (如果存在)
-    if [[ -f "/etc/fail2ban/jail.local" ]]; then
-        log_info "更新 Fail2ban 配置..."
-        sed -i "s/port = .*/port = $new_port/" /etc/fail2ban/jail.local
-        systemctl restart fail2ban 2>/dev/null || true
-    fi
-    
-    # 更新配置文件
-    if load_config; then
-        SSH_PORT="$new_port"
-        save_config
-    fi
-    
-    # 重启 SSH 服务
-    log_info "重启 SSH 服务..."
-    systemctl restart ssh
-    check_result "SSH 服务重启"
-    
-    log_success "SSH 端口已成功修改为: $new_port"
-    log_warn "请使用新端口重新连接: ssh -p $new_port user@server"
-    log_info "旧的连接会话在断开后无法重连"
-    
-    read -p "按回车键返回主菜单..."
-}
-
-# ========================================
 # 主程序逻辑
 # ========================================
 
@@ -1962,7 +1858,7 @@ main() {
     
     while true; do
         show_main_menu
-        read -p "请输入选项 [1-8]: " choice
+        read -p "请输入选项 [1-7]: " choice
         
         case $choice in
             1) first_install ;;
@@ -1971,13 +1867,12 @@ main() {
             4) check_service_status ;;
             5) show_client_info ;;
             6) uninstall_service ;;
-            7) change_ssh_port ;;
-            8) 
+            7) 
                 log_info "感谢使用 VLESS Reality 服务管理面板！"
                 exit 0
                 ;;
             *)
-                log_error "无效选择，请输入 1-8"
+                log_error "无效选择，请输入 1-7"
                 sleep 2
                 ;;
         esac
