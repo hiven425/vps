@@ -250,6 +250,21 @@ EOF
     log_success "SSH安全配置已生成: $SSH_CUSTOM_CONFIG"
 }
 
+# 获取SSH服务名称
+get_ssh_service_name() {
+    # 检查不同的SSH服务名称
+    if systemctl list-unit-files | grep -q "^sshd.service"; then
+        echo "sshd"
+    elif systemctl list-unit-files | grep -q "^ssh.service"; then
+        echo "ssh"
+    elif systemctl list-unit-files | grep -q "^openssh.service"; then
+        echo "openssh"
+    else
+        log_error "未找到SSH服务"
+        return 1
+    fi
+}
+
 # 测试SSH配置
 test_ssh_config() {
     log_info "测试SSH配置文件语法..."
@@ -278,13 +293,33 @@ test_ssh_config() {
 restart_ssh_service() {
     log_info "重启SSH服务..."
     
-    if systemctl reload sshd; then
+    # 获取SSH服务名称
+    local ssh_service=$(get_ssh_service_name)
+    if [[ $? -ne 0 ]]; then
+        log_error "无法确定SSH服务名称"
+        return 1
+    fi
+    
+    log_info "检测到SSH服务名称: $ssh_service"
+    
+    # 使用reload而不是restart，保持现有连接
+    if systemctl reload "$ssh_service"; then
         log_success "SSH服务重启成功"
         log_warn "请注意: SSH端口已从 $CURRENT_SSH_PORT 更改为 $NEW_SSH_PORT"
         log_warn "请确保在断开连接前测试新端口: ssh -p $NEW_SSH_PORT user@server"
     else
         log_error "SSH服务重启失败"
-        return 1
+        
+        # 如果reload失败，尝试restart
+        log_info "尝试完全重启SSH服务..."
+        if systemctl restart "$ssh_service"; then
+            log_success "SSH服务重启成功"
+            log_warn "请注意: SSH端口已从 $CURRENT_SSH_PORT 更改为 $NEW_SSH_PORT"
+            log_warn "请确保在断开连接前测试新端口: ssh -p $NEW_SSH_PORT user@server"
+        else
+            log_error "SSH服务重启失败"
+            return 1
+        fi
     fi
 }
 
