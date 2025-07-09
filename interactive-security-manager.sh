@@ -817,11 +817,13 @@ manage_ufw() {
                     continue
                 fi
                 
-                # 获取规则详情
-                local rule_info=$(ufw status numbered | grep "\\[$rule_number\\]" | head -1)
+                # 获取规则详情 - 更健壮的检测方法
+                local rule_info=$(ufw status numbered | awk "/\\[ *$rule_number\\]/ {print \$0}")
                 
                 if [[ -z "$rule_info" ]]; then
                     log_error "规则编号 $rule_number 不存在"
+                    log_info "当前可用的规则编号:"
+                    ufw status numbered | grep "\\[" | awk '{print $1}' | tr -d '[]'
                     read -p "按回车键继续..."
                     continue
                 fi
