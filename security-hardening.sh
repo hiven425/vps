@@ -29,6 +29,7 @@ readonly FAIL2BAN_CONFIG="/etc/fail2ban/jail.local"
 # 配置变量
 NEW_SSH_PORT=""
 CURRENT_SSH_PORT=""
+ROOT_LOGIN_POLICY="prohibit-password"  # 默认允许root密钥登录
 
 # 日志函数
 log_info() {
@@ -118,41 +119,73 @@ get_current_ssh_port() {
 check_ssh_keys() {
     log_info "检查SSH密钥配置..."
     
-    # 检查root用户的authorized_keys
-    if [[ -f "/root/.ssh/authorized_keys" ]]; then
-        local key_count=$(wc -l < "/root/.ssh/authorized_keys")
-        log_info "发现 $key_count 个已配置的SSH公钥"
-        
-        echo ""
-        echo -e "${YELLOW}SSH密钥安全选项:${NC}"
-        echo "1. 保留现有密钥 (使用云服务商提供的密钥)"
-        echo "2. 添加新密钥 (推荐: 使用您自己的密钥)"
-        echo "3. 替换所有密钥 (最安全: 完全使用新密钥)"
-        echo ""
-        
-        while true; do
-            read -p "请选择 [1-3]: " key_choice
-            case $key_choice in
-                1)
-                    log_info "保留现有SSH密钥"
-                    return 0
-                    ;;
-                2)
-                    add_ssh_key
-                    return 0
-                    ;;
-                3)
-                    replace_ssh_keys
-                    return 0
-                    ;;
-                *)
-                    log_error "无效选择，请输入 1-3"
-                    ;;
-            esac
-        done
+    # 询问root登录策略
+    echo ""
+    echo -e "${YELLOW}Root登录策略:${NC}"
+    echo "1. 允许root密钥登录 (推荐用于VPS)"
+    echo "2. 完全禁止root登录 (仅允许普通用户)"
+    echo ""
+    
+    while true; do
+        read -p "请选择 [1-2]: " root_policy
+        case $root_policy in
+            1)
+                ROOT_LOGIN_POLICY="prohibit-password"
+                log_info "已选择：允许root密钥登录"
+                break
+                ;;
+            2)
+                ROOT_LOGIN_POLICY="no"
+                log_info "已选择：完全禁止root登录"
+                log_warn "请确保已创建普通用户账户"
+                break
+                ;;
+            *)
+                log_error "无效选择，请输入 1-2"
+                ;;
+        esac
+    done
+    
+    # 只有在允许root登录时才处理root密钥
+    if [[ "$ROOT_LOGIN_POLICY" == "prohibit-password" ]]; then
+        # 检查root用户的authorized_keys
+        if [[ -f "/root/.ssh/authorized_keys" ]]; then
+            local key_count=$(wc -l < "/root/.ssh/authorized_keys")
+            log_info "发现 $key_count 个已配置的SSH公钥"
+            
+            echo ""
+            echo -e "${YELLOW}SSH密钥安全选项:${NC}"
+            echo "1. 保留现有密钥 (使用云服务商提供的密钥)"
+            echo "2. 添加新密钥 (推荐: 使用您自己的密钥)"
+            echo "3. 替换所有密钥 (最安全: 完全使用新密钥)"
+            echo ""
+            
+            while true; do
+                read -p "请选择 [1-3]: " key_choice
+                case $key_choice in
+                    1)
+                        log_info "保留现有SSH密钥"
+                        return 0
+                        ;;
+                    2)
+                        add_ssh_key
+                        return 0
+                        ;;
+                    3)
+                        replace_ssh_keys
+                        return 0
+                        ;;
+                    *)
+                        log_error "无效选择，请输入 1-3"
+                        ;;
+                esac
+            done
+        else
+            log_warn "未找到SSH公钥文件，需要添加SSH密钥"
+            add_ssh_key
+        fi
     else
-        log_warn "未找到SSH公钥文件，需要添加SSH密钥"
-        add_ssh_key
+        log_info "已选择禁止root登录，跳过root密钥配置"
     fi
 }
 
@@ -349,8 +382,8 @@ configure_ssh_security() {
 # 修改SSH端口
 Port $NEW_SSH_PORT
 
-# 禁用root密码登录，仅允许密钥认证
-PermitRootLogin prohibit-password
+# 禁用root密码登录，根据用户选择设置
+PermitRootLogin $ROOT_LOGIN_POLICY
 
 # 禁用所有密码认证
 PasswordAuthentication no
