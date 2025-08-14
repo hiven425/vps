@@ -332,10 +332,21 @@ install_dependencies() {
     log_info "升级系统..."
     apt upgrade -y || { log_error "系统升级失败"; return 1; }
 
-    # 安装所有依赖包（合并安装，提高效率）
+    # 安装所有依赖包（包含基础工具，确保完整性）
     log_info "安装依赖包..."
-    apt install -y curl vim ufw gcc g++ libpcre3 libpcre3-dev zlib1g zlib1g-dev \
-        openssl libssl-dev wget make socat cron dnsutils || {
+    apt install -y \
+        curl wget vim ufw \
+        gcc g++ make \
+        libpcre3 libpcre3-dev \
+        zlib1g zlib1g-dev \
+        openssl libssl-dev \
+        socat cron \
+        dnsutils bind9-utils \
+        gawk sed grep \
+        ca-certificates \
+        gnupg lsb-release \
+        software-properties-common \
+        apt-transport-https || {
         log_error "依赖包安装失败"
         return 1
     }
@@ -592,36 +603,383 @@ create_nginx_config() {
         }
     fi
 
-    # 创建简单的伪装网站
+    # 创建逼真的伪装网站
     log_info "创建伪装网站..."
-    mkdir -p /var/www/html
+    mkdir -p /var/www/html/{css,js,images}
+
+    # 创建主页
     cat > /var/www/html/index.html << 'HTML'
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>欢迎访问</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
-        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        h1 { color: #333; text-align: center; }
-        p { line-height: 1.6; color: #666; }
-        .footer { text-align: center; margin-top: 30px; color: #999; font-size: 14px; }
-    </style>
+    <title>TechCorp Solutions - Digital Innovation Partner</title>
+    <meta name="description" content="Leading technology solutions provider specializing in cloud computing, digital transformation, and enterprise software development.">
+    <meta name="keywords" content="technology, cloud computing, digital transformation, enterprise software">
+    <link rel="stylesheet" href="/css/style.css">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
 </head>
 <body>
-    <div class="container">
-        <h1>网站建设中</h1>
-        <p>感谢您的访问！我们的网站正在建设中，敬请期待。</p>
-        <p>如有任何问题，请联系我们的技术支持团队。</p>
-        <div class="footer">
-            <p>&copy; 2024 版权所有</p>
+    <header>
+        <nav class="navbar">
+            <div class="nav-container">
+                <div class="nav-logo">
+                    <h2>TechCorp</h2>
+                </div>
+                <ul class="nav-menu">
+                    <li><a href="#home">Home</a></li>
+                    <li><a href="#services">Services</a></li>
+                    <li><a href="#about">About</a></li>
+                    <li><a href="#contact">Contact</a></li>
+                </ul>
+            </div>
+        </nav>
+    </header>
+
+    <main>
+        <section id="home" class="hero">
+            <div class="hero-content">
+                <h1>Digital Innovation for Modern Business</h1>
+                <p>We help enterprises transform their operations through cutting-edge technology solutions and strategic digital initiatives.</p>
+                <button class="cta-button">Get Started</button>
+            </div>
+        </section>
+
+        <section id="services" class="services">
+            <div class="container">
+                <h2>Our Services</h2>
+                <div class="service-grid">
+                    <div class="service-card">
+                        <h3>Cloud Computing</h3>
+                        <p>Scalable cloud infrastructure and migration services for modern enterprises.</p>
+                    </div>
+                    <div class="service-card">
+                        <h3>Digital Transformation</h3>
+                        <p>Strategic consulting and implementation for digital business transformation.</p>
+                    </div>
+                    <div class="service-card">
+                        <h3>Enterprise Software</h3>
+                        <p>Custom software development and enterprise application integration.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="about" class="about">
+            <div class="container">
+                <h2>About TechCorp</h2>
+                <p>With over 15 years of experience in the technology industry, TechCorp Solutions has been at the forefront of digital innovation. We partner with businesses of all sizes to deliver transformative technology solutions that drive growth and efficiency.</p>
+                <div class="stats">
+                    <div class="stat">
+                        <h3>500+</h3>
+                        <p>Projects Completed</p>
+                    </div>
+                    <div class="stat">
+                        <h3>50+</h3>
+                        <p>Enterprise Clients</p>
+                    </div>
+                    <div class="stat">
+                        <h3>15+</h3>
+                        <p>Years Experience</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2024 TechCorp Solutions. All rights reserved.</p>
+            <p>Contact: info@techcorp-solutions.com | +1 (555) 123-4567</p>
         </div>
+    </footer>
+
+    <script src="/js/main.js"></script>
+</body>
+</html>
+HTML
+
+    # 创建CSS样式文件
+    cat > /var/www/html/css/style.css << 'CSS'
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    line-height: 1.6;
+    color: #333;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 20px;
+}
+
+/* Navigation */
+.navbar {
+    background: #fff;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    position: fixed;
+    width: 100%;
+    top: 0;
+    z-index: 1000;
+}
+
+.nav-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    height: 70px;
+}
+
+.nav-logo h2 {
+    color: #2c5aa0;
+    font-size: 24px;
+}
+
+.nav-menu {
+    display: flex;
+    list-style: none;
+    gap: 30px;
+}
+
+.nav-menu a {
+    text-decoration: none;
+    color: #333;
+    font-weight: 500;
+    transition: color 0.3s;
+}
+
+.nav-menu a:hover {
+    color: #2c5aa0;
+}
+
+/* Hero Section */
+.hero {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 150px 0 100px;
+    text-align: center;
+}
+
+.hero-content h1 {
+    font-size: 3rem;
+    margin-bottom: 20px;
+    font-weight: 700;
+}
+
+.hero-content p {
+    font-size: 1.2rem;
+    margin-bottom: 30px;
+    max-width: 600px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.cta-button {
+    background: #ff6b6b;
+    color: white;
+    padding: 15px 30px;
+    border: none;
+    border-radius: 5px;
+    font-size: 1.1rem;
+    cursor: pointer;
+    transition: background 0.3s;
+}
+
+.cta-button:hover {
+    background: #ff5252;
+}
+
+/* Services Section */
+.services {
+    padding: 80px 0;
+    background: #f8f9fa;
+}
+
+.services h2 {
+    text-align: center;
+    margin-bottom: 50px;
+    font-size: 2.5rem;
+    color: #333;
+}
+
+.service-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 30px;
+}
+
+.service-card {
+    background: white;
+    padding: 30px;
+    border-radius: 10px;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+    text-align: center;
+    transition: transform 0.3s;
+}
+
+.service-card:hover {
+    transform: translateY(-5px);
+}
+
+.service-card h3 {
+    color: #2c5aa0;
+    margin-bottom: 15px;
+    font-size: 1.5rem;
+}
+
+/* About Section */
+.about {
+    padding: 80px 0;
+}
+
+.about h2 {
+    text-align: center;
+    margin-bottom: 30px;
+    font-size: 2.5rem;
+    color: #333;
+}
+
+.about p {
+    text-align: center;
+    font-size: 1.1rem;
+    margin-bottom: 50px;
+    max-width: 800px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 30px;
+    text-align: center;
+}
+
+.stat h3 {
+    font-size: 3rem;
+    color: #2c5aa0;
+    margin-bottom: 10px;
+}
+
+.stat p {
+    font-size: 1.1rem;
+    color: #666;
+}
+
+/* Footer */
+footer {
+    background: #333;
+    color: white;
+    text-align: center;
+    padding: 30px 0;
+}
+
+footer p {
+    margin-bottom: 10px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .nav-menu {
+        display: none;
+    }
+
+    .hero-content h1 {
+        font-size: 2rem;
+    }
+
+    .hero-content p {
+        font-size: 1rem;
+    }
+}
+CSS
+
+    # 创建JavaScript文件
+    cat > /var/www/html/js/main.js << 'JS'
+// Smooth scrolling for navigation links
+document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+    anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const target = document.querySelector(this.getAttribute('href'));
+        if (target) {
+            target.scrollIntoView({
+                behavior: 'smooth',
+                block: 'start'
+            });
+        }
+    });
+});
+
+// Add scroll effect to navbar
+window.addEventListener('scroll', function() {
+    const navbar = document.querySelector('.navbar');
+    if (window.scrollY > 50) {
+        navbar.style.background = 'rgba(255, 255, 255, 0.95)';
+        navbar.style.backdropFilter = 'blur(10px)';
+    } else {
+        navbar.style.background = '#fff';
+        navbar.style.backdropFilter = 'none';
+    }
+});
+
+// Simple form validation and interaction
+document.querySelector('.cta-button')?.addEventListener('click', function() {
+    alert('Thank you for your interest! Please contact us at info@techcorp-solutions.com for more information.');
+});
+
+// Add loading animation
+window.addEventListener('load', function() {
+    document.body.style.opacity = '0';
+    document.body.style.transition = 'opacity 0.5s';
+    setTimeout(() => {
+        document.body.style.opacity = '1';
+    }, 100);
+});
+JS
+
+    # 创建favicon
+    echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" | base64 -d > /var/www/html/favicon.ico
+
+    # 创建robots.txt
+    cat > /var/www/html/robots.txt << 'ROBOTS'
+User-agent: *
+Allow: /
+
+Sitemap: https://$(cat "$CONFIG_DIR/domain.conf")/sitemap.xml
+ROBOTS
+
+    # 创建404页面
+    cat > /var/www/html/404.html << 'HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>404 - Page Not Found | TechCorp Solutions</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div style="text-align: center; padding: 100px 20px;">
+        <h1 style="font-size: 4rem; color: #2c5aa0;">404</h1>
+        <h2>Page Not Found</h2>
+        <p>The page you're looking for doesn't exist.</p>
+        <a href="/" style="color: #2c5aa0; text-decoration: none;">← Back to Home</a>
     </div>
 </body>
 </html>
 HTML
+
+    log_success "逼真伪装网站创建完成"
 
     cat > "$NGINX_CONFIG" << EOF
 user root;

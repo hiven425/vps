@@ -57,6 +57,55 @@ check_root() {
     fi
 }
 
+# 检查并安装基础依赖
+check_dependencies() {
+    log_info "检查系统依赖..."
+
+    # 基础命令列表
+    local required_commands=("curl" "wget" "awk" "sed" "grep" "openssl" "ss" "systemctl")
+    local missing_commands=()
+
+    # 检查命令是否存在
+    for cmd in "${required_commands[@]}"; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing_commands+=("$cmd")
+        fi
+    done
+
+    # 如果有缺失的命令，尝试安装
+    if [[ ${#missing_commands[@]} -gt 0 ]]; then
+        log_warn "检测到缺失的命令: ${missing_commands[*]}"
+        log_info "正在安装基础依赖包..."
+
+        local pkg_manager=$(detect_package_manager)
+        case $pkg_manager in
+            apt)
+                apt update -y
+                apt install -y curl wget gawk sed grep openssl iproute2 systemd coreutils
+                ;;
+            yum)
+                yum install -y curl wget gawk sed grep openssl iproute systemd coreutils
+                ;;
+            *)
+                log_error "不支持的包管理器: $pkg_manager"
+                return 1
+                ;;
+        esac
+
+        # 再次检查
+        for cmd in "${missing_commands[@]}"; do
+            if ! command -v "$cmd" >/dev/null 2>&1; then
+                log_error "安装后仍然缺失命令: $cmd"
+                return 1
+            fi
+        done
+
+        log_success "基础依赖安装完成"
+    else
+        log_success "所有基础依赖已满足"
+    fi
+}
+
 # 检查系统要求
 check_system() {
     log_info "检查系统要求..."
@@ -98,21 +147,46 @@ validate_port() {
 
 # 获取当前SSH端口
 get_current_ssh_port() {
-    # 从SSH配置文件获取端口
+    log_info "检测当前SSH端口..."
+
+    # 方法1: 从SSH配置文件获取端口
     local port=$(grep -E "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')
-    
-    # 如果没有找到，检查自定义配置
+
+    # 方法2: 如果没有找到，检查自定义配置
     if [[ -z "$port" && -f "$SSH_CUSTOM_CONFIG" ]]; then
         port=$(grep -E "^Port " "$SSH_CUSTOM_CONFIG" 2>/dev/null | awk '{print $2}')
     fi
-    
+
+    # 方法3: 如果配置文件中没有，从实际监听端口检测
+    if [[ -z "$port" ]]; then
+        # 检测SSH服务实际监听的端口
+        local listening_ports=$(ss -tlnp | grep sshd | grep -oE ':[0-9]+' | sed 's/://' | sort -u)
+        if [[ -n "$listening_ports" ]]; then
+            # 如果有多个端口，选择第一个非22的，如果没有则选择22
+            for p in $listening_ports; do
+                if [[ "$p" != "22" ]]; then
+                    port="$p"
+                    break
+                fi
+            done
+            # 如果没有找到非22端口，使用第一个端口
+            if [[ -z "$port" ]]; then
+                port=$(echo "$listening_ports" | head -n1)
+            fi
+        fi
+    fi
+
     # 默认端口
     if [[ -z "$port" ]]; then
         port="22"
     fi
-    
+
     CURRENT_SSH_PORT="$port"
     log_info "当前SSH端口: $CURRENT_SSH_PORT"
+
+    # 显示当前SSH监听状态
+    log_info "当前SSH服务监听状态:"
+    ss -tlnp | grep -E "sshd|:$CURRENT_SSH_PORT " || log_warn "未检测到SSH服务监听"
 }
 
 # 检查SSH密钥安全性
@@ -694,13 +768,55 @@ check_ufw_installation() {
     log_success "UFW安装完成"
 }
 
+# 智能检测SSH配置状态
+check_ssh_security_status() {
+    log_info "检查SSH安全配置状态..."
+
+    # 检查是否已经配置了密钥认证
+    local password_auth=$(sshd -T | grep "passwordauthentication" | awk '{print $2}')
+    local pubkey_auth=$(sshd -T | grep "pubkeyauthentication" | awk '{print $2}')
+    local root_login=$(sshd -T | grep "permitrootlogin" | awk '{print $2}')
+
+    log_info "当前SSH安全状态:"
+    log_info "- 密码认证: $password_auth"
+    log_info "- 公钥认证: $pubkey_auth"
+    log_info "- Root登录: $root_login"
+
+    # 如果已经是安全配置，询问是否跳过
+    if [[ "$password_auth" == "no" && "$pubkey_auth" == "yes" && "$root_login" =~ ^(no|prohibit-password)$ ]]; then
+        log_success "检测到SSH已经配置为安全模式"
+        read -p "SSH已经安全配置，是否跳过SSH配置步骤？(Y/n): " skip_ssh
+        if [[ "$skip_ssh" =~ ^[Nn]$ ]]; then
+            return 1  # 不跳过
+        else
+            return 0  # 跳过SSH配置
+        fi
+    fi
+
+    return 1  # 需要配置SSH
+}
+
 # 配置UFW防火墙
 configure_ufw_firewall() {
     log_info "配置UFW防火墙..."
-    
-    # 重要：先允许新的SSH端口，防止被锁定
-    log_info "步骤1: 允许新的SSH端口 $NEW_SSH_PORT"
-    ufw allow "$NEW_SSH_PORT/tcp"
+
+    # 智能检测当前SSH端口并确保防火墙规则正确
+    log_info "步骤1: 智能配置SSH端口防火墙规则"
+
+    # 如果当前SSH端口不是22且不等于新端口，也要保留
+    if [[ "$CURRENT_SSH_PORT" != "22" && "$CURRENT_SSH_PORT" != "$NEW_SSH_PORT" ]]; then
+        log_info "保留当前SSH端口 $CURRENT_SSH_PORT 的防火墙规则"
+        ufw allow "$CURRENT_SSH_PORT/tcp"
+    fi
+
+    # 允许新的SSH端口
+    if [[ "$NEW_SSH_PORT" != "$CURRENT_SSH_PORT" ]]; then
+        log_info "添加新SSH端口 $NEW_SSH_PORT 的防火墙规则"
+        ufw allow "$NEW_SSH_PORT/tcp"
+    else
+        log_info "SSH端口未更改，确保端口 $NEW_SSH_PORT 已开放"
+        ufw allow "$NEW_SSH_PORT/tcp"
+    fi
     
     # 设置默认策略
     log_info "步骤2: 设置默认策略"
@@ -810,25 +926,38 @@ main() {
     # 检查系统要求
     check_root
     check_system
-    
+
+    # 检查系统依赖
+    check_dependencies
+
     # 创建配置备份
     create_backup
-    
+
     log_info "开始VPS安全加固流程..."
     echo ""
     
     # 第一阶段：SSH安全加固
     log_info "=== 第一阶段：SSH安全加固 ==="
-    collect_ssh_port
-    check_ssh_keys
-    configure_ssh_security
-    
-    if test_ssh_config; then
-        restart_ssh_service
+
+    # 检查SSH安全状态，如果已经安全则询问是否跳过
+    if check_ssh_security_status; then
+        log_info "跳过SSH配置，使用现有安全设置"
+        # 仍然需要获取当前SSH端口用于防火墙配置
+        get_current_ssh_port
+        NEW_SSH_PORT="$CURRENT_SSH_PORT"
     else
-        log_error "SSH配置失败，退出程序"
-        exit 1
+        collect_ssh_port
+        check_ssh_keys
+        configure_ssh_security
+
+        if test_ssh_config; then
+            restart_ssh_service
+        else
+            log_error "SSH配置测试失败，请检查配置"
+            exit 1
+        fi
     fi
+
     
     echo ""
     
