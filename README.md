@@ -1,56 +1,76 @@
-# VLESS Reality 终极部署脚本 v6.0.0
+# VPS 安全工具集
 
-一个专业级的 VLESS Reality 代理服务部署和管理脚本，具备智能证书处理、详细诊断、完全幂等性和用户友好的交互界面。
+专业级的VPS安全加固和代理服务部署工具集，包含两个核心脚本：VPS安全加固工具和VLESS Reality代理部署脚本。
 
-## 🎯 核心特性
+## 🎯 工具集概述
 
-### 🧠 智能证书处理
-- **状态码检测**: 精确处理 acme.sh 的不同退出状态（0=成功，2=跳过，其他=错误）
-- **用户友好沟通**: 明确告知用户"跳过续期是正确的行为"，消除困惑
-- **强制模式**: 支持 `--force` 参数强制重新申请证书
-- **自动安装**: 无论申请结果如何，都会执行证书安装流程
+### 🛡️ VPS安全加固工具 (vps-security.sh)
+- **一键安全加固**: 自动配置SSH、防火墙、入侵防护
+- **交互式菜单**: 友好的图形化菜单界面
+- **智能检测**: 自动检测现有安全配置，避免重复操作
+- **模块化管理**: 独立管理SSH、Fail2ban、UFW各个组件
+- **安全状态检查**: 全面的安全状态诊断和报告
 
-### 🔍 详细失败诊断
-- **自动日志显示**: 服务启动失败时自动显示 `journalctl -u service -n 20`
-- **配置验证**: 启动前检查 Nginx 和 Xray 配置文件语法
-- **端口监听检查**: 验证 443 端口监听状态
-- **证书文件验证**: 检查证书文件存在性和有效期
-
-### 🔄 完全幂等性
-- **安全重复运行**: 可多次执行而不会破坏现有配置
-- **智能跳过**: 自动跳过已完成的步骤和有效的证书
-- **配置保护**: 保护现有的服务配置和用户数据
-
-### 🎨 用户友好界面
-- **步骤进度**: 清晰的步骤显示（步骤 1/11 到 11/11）
-- **状态反馈**: 详细的操作状态和验证结果
-- **颜色编码**: 美观的界面设计和信息分类
-- **帮助系统**: 内置帮助信息和使用说明
+### 🌐 Reality代理部署工具 (reality-setup.sh)
+- **智能证书处理**: 精确处理acme.sh的不同状态，支持强制续期
+- **详细失败诊断**: 自动显示服务日志，配置验证，端口检查
+- **完全幂等性**: 可安全重复运行，智能跳过已完成步骤
+- **企业级伪装**: 生成逼真的企业网站作为流量伪装
+- **完整管理功能**: 支持配置重置、服务管理、链接生成
 
 ## 📁 项目结构
 
 ```
 vps/
-├── setup.sh                      # VLESS Reality 终极部署脚本 (原版)
-├── reality-setup.sh               # Reality 一键搭建管理脚本 (新版)
-├── security-hardening.sh          # VPS 安全加固脚本
-├── interactive-security-manager.sh # 交互式安全管理器
-└── README.md                      # 项目文档 (本文件)
+├── README.md                    # 项目说明文档
+├── vps-security.sh             # VPS安全加固脚本
+└── reality-setup.sh             # Reality代理部署脚本
 ```
 
-**功能丰富**: 提供多种脚本选择，满足不同需求。
+### 脚本功能说明
 
-## 🔧 功能模块
+| 脚本 | 主要功能 | 适用场景 | 交互性 | 推荐度 |
+|------|----------|----------|--------|--------|
+| vps-security.sh | SSH加固、防火墙、入侵防护 | VPS安全加固 | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| reality-setup.sh | VLESS-Reality代理部署 | 代理服务搭建 | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
 
-### 主要功能
-1. **首次安装或完整重装服务** - 完整的 VLESS Reality 部署流程
-2. **修改服务配置** - 域名、UUID、密钥等配置管理
-3. **安全与防火墙管理** - Fail2ban 和 UFW 防火墙配置
-4. **检查服务运行状态** - 详细的服务状态监控
-5. **查看客户端连接信息** - 生成和显示连接配置
-6. **卸载服务** - 完整的服务卸载和清理
-7. **修改SSH端口** - SSH 安全配置管理
-8. **退出** - 安全退出脚本
+## 🚀 快速开始
+
+### 🛡️ VPS安全加固
+
+```bash
+# 添加执行权限
+chmod +x vps-security.sh
+
+# 运行安全加固脚本
+sudo ./vps-security.sh
+```
+
+**主要功能：**
+- 🚀 一键安全加固（推荐新手）
+- 🔧 SSH安全配置
+- 🛡️ Fail2ban入侵防护
+- 🔥 UFW防火墙配置
+- 📊 安全状态检查
+- ⚙️ 服务管理界面
+
+### 🌐 Reality代理部署
+
+```bash
+# 添加执行权限
+chmod +x reality-setup.sh
+
+# 运行Reality部署脚本
+sudo ./reality-setup.sh
+```
+
+**主要功能：**
+- 🎯 完整安装Reality服务
+- 🔄 服务管理（重启、状态检查）
+- 🔧 配置重置（UUID、密钥、ShortIds）
+- 📱 生成VLESS客户端链接
+- 🚀 BBR加速和TCP优化
+- 🗑️ 完整卸载功能
 
 ### 配置管理功能
 - **更换主域名**: 申请新证书并更新所有相关配置
@@ -65,44 +85,25 @@ vps/
 - **操作系统**: Debian/Ubuntu (推荐 Ubuntu 20.04+)
 - **权限**: Root 用户权限
 - **网络**: 稳定的互联网连接
-- **域名**: 已解析到服务器的域名
-- **Cloudflare**: Cloudflare API Token（用于 DNS 验证）
+- **域名**: 已解析到服务器的域名（仅Reality脚本需要）
+- **Cloudflare**: Cloudflare API Token（仅Reality脚本需要，用于DNS验证）
 
-### 脚本选择
+## 🎯 VPS安全加固脚本详解 (vps-security.sh)
 
-#### 方案一：原版终极部署脚本 (setup.sh)
-适合高级用户，功能完整但交互复杂
+### 交互式菜单功能
+1. **一键安全加固** - 推荐新手使用
+   - 自动配置SSH安全（端口、密钥、禁用密码登录）
+   - 配置UFW防火墙规则
+   - 安装和配置Fail2ban入侵防护
+   - 智能检测现有配置，避免重复操作
 
-```bash
-# 查看帮助信息
-bash setup.sh --help
+2. **模块化管理**
+   - SSH安全配置（端口修改、密钥管理）
+   - Fail2ban管理（状态查看、IP解封）
+   - UFW防火墙管理（规则添加、删除、重置）
+   - 安全状态检查（全面的安全诊断）
 
-# 正常部署（推荐）
-bash setup.sh
-
-# 强制重新申请证书
-bash setup.sh --force
-```
-
-#### 方案二：新版一键管理脚本 (reality-setup.sh) ⭐推荐
-适合所有用户，界面友好，功能完整
-
-```bash
-# 添加执行权限
-chmod +x reality-setup.sh
-
-# 运行脚本
-sudo ./reality-setup.sh
-```
-
-**新版脚本特点**:
-- 🎯 友好的交互式菜单界面
-- 🔧 完整的安装和管理功能
-- 🔄 支持配置重置和服务管理
-- 📱 自动生成VLESS客户端链接
-- 🗑️ 支持完整卸载功能
-
-## 🎯 新版脚本功能详解 (reality-setup.sh)
+## 🎯 Reality代理脚本详解 (reality-setup.sh)
 
 ### 主菜单功能
 1. **完整安装Reality服务** - 一键安装所有组件
@@ -188,84 +189,59 @@ sudo ./reality-setup.sh
 [INFO] 详细错误信息请查看: /root/.acme.sh/acme.sh.log
 ```
 
-## ⚠️ 已知交互逻辑缺陷
+## 💡 使用建议
 
-经过深入分析，发现脚本存在以下交互逻辑缺陷，需要在使用时注意：
+### VPS安全加固最佳实践
+1. **首次使用**: 建议使用"一键安全加固"功能，自动配置所有安全设置
+2. **定期检查**: 使用"安全状态检查"功能定期检查系统安全状态
+3. **备份配置**: 脚本会自动备份重要配置文件到 `/root/security-backups/`
+4. **SSH连接**: 修改SSH端口后，请使用新端口连接服务器
 
-### 1. 颜色变量定义顺序问题
-**问题描述**: `show_usage()` 函数在颜色变量定义之前使用了 `${CYAN}`、`${WHITE}`、`${NC}` 等变量
-**影响**: 帮助信息显示时颜色变量为空，影响显示效果
-**位置**: 第14-31行（show_usage函数）vs 第47-50行（颜色定义）
-**临时解决**: 功能正常，仅影响显示美观
-
-### 2. set -e 与交互菜单的严重冲突
-**问题描述**: 脚本开头设置了 `set -e`（遇到错误立即退出），但在交互菜单中使用了 `check_result()` 函数
-**影响**: 如果在菜单操作中遇到任何错误（如服务重启失败），整个脚本会立即退出，用户无法返回主菜单
-**风险等级**: 高
-**具体场景**: 
-- 域名更换时证书申请失败
-- 服务重启失败
-- 配置文件语法错误
-
-### 3. load_config 函数使用不一致
-**问题描述**: `load_config()` 函数在配置文件不存在时返回 1，在 `set -e` 环境下可能导致意外退出
-**影响**: 部分功能可能无法正常处理配置文件不存在的情况
-**使用模式不一致**:
-- 有些地方使用 `if ! load_config; then`（正确）
-- 有些地方使用 `if load_config; then`（可能有问题）
-- 有些地方直接调用 `load_config`（危险）
-
-### 4. 错误处理机制设计缺陷
-**问题描述**: `check_result()` 函数直接调用 `exit 1`，不适合交互式环境
-**建议改进**: 应该返回错误状态而不是直接退出，让调用者决定如何处理
-
-## 🔧 建议的修复方案
-
-### 短期解决方案
-1. **谨慎使用**: 在生产环境中谨慎使用菜单功能，优先使用首次安装功能
-2. **备份配置**: 在进行任何配置更改前先备份
-3. **分步操作**: 避免在一次会话中进行多个复杂操作
-
-### 长期修复建议
-1. **移除 set -e**: 在交互式脚本中不应使用 `set -e`
-2. **重构错误处理**: 将 `check_result()` 改为返回状态码而非直接退出
-3. **统一 load_config 使用**: 确保所有地方都正确处理配置文件不存在的情况
-4. **修复颜色变量**: 将颜色定义移到脚本开头
+### Reality代理部署建议
+1. **域名准备**: 确保域名已正确解析到服务器IP
+2. **Cloudflare配置**: 准备好Cloudflare API Token，用于自动DNS验证
+3. **证书管理**: 脚本支持智能证书处理，会自动跳过有效证书的续期
+4. **服务监控**: 使用菜单中的状态检查功能监控服务运行状态
 
 ## 🛠️ 故障排除
 
 ### 常见问题
 
-#### Q: 为什么显示"跳过续期"？
-A: 这是正常行为！说明您的证书仍然有效，acme.sh 智能地避免了不必要的申请。
+#### Q: VPS安全加固后无法SSH连接怎么办？
+A: 检查是否修改了SSH端口，使用新端口连接。脚本会在完成后显示新的SSH连接信息。
 
-#### Q: 如何强制重新申请证书？
-A: 使用 `bash setup.sh --force` 命令。
+#### Q: Reality代理为什么显示"跳过续期"？
+A: 这是正常行为！说明您的证书仍然有效，acme.sh智能地避免了不必要的申请。
+
+#### Q: 如何重置Reality配置？
+A: 使用reality-setup.sh菜单中的重置功能，可以重置UUID、密钥对或所有配置。
 
 #### Q: 脚本可以重复运行吗？
-A: 是的！脚本具有完全幂等性，可以安全重复运行。
+A: 是的！两个脚本都具有完全幂等性，可以安全重复运行。
 
 #### Q: 服务启动失败怎么办？
 A: 脚本会自动显示详细的诊断信息，包括服务日志和配置验证结果。
 
-#### Q: 在菜单操作中遇到错误脚本退出了怎么办？
-A: 这是已知的交互逻辑缺陷。建议重新运行脚本，优先使用首次安装功能。
-
 ### 日志和诊断
 ```bash
+# VPS安全相关
+# 查看SSH服务状态
+systemctl status ssh
+# 查看Fail2ban状态
+fail2ban-client status
+# 查看UFW防火墙状态
+ufw status verbose
+
+# Reality代理相关
 # 查看 Xray 服务日志
 journalctl -u xray -f
-
 # 查看 Nginx 服务日志
 journalctl -u nginx -f
-
 # 检查服务状态
 systemctl status xray nginx
-
 # 验证配置文件
 nginx -t
 /usr/local/bin/xray test -config /usr/local/etc/xray/config.json
-
 # 查看证书状态
 openssl x509 -in /etc/ssl/private/fullchain.cer -text -noout
 ```
@@ -280,39 +256,43 @@ openssl x509 -in /etc/ssl/private/fullchain.cer -text -noout
 
 ### 关键文件位置
 ```
-/etc/setup/config.ini              # 主配置文件
+# VPS安全加固相关
+/etc/security-hardening/            # 安全配置目录
+/etc/ssh/sshd_config.d/99-hardening.conf  # SSH安全配置
+/etc/fail2ban/jail.local            # Fail2ban配置
+/root/security-backups/             # 安全配置备份
+
+# Reality代理相关
+/etc/reality-config/                # Reality配置目录
 /usr/local/etc/xray/config.json    # Xray 配置
 /etc/nginx/nginx.conf               # Nginx 配置
 /etc/ssl/private/                   # SSL 证书目录
-/root/client-configs/               # 客户端配置
-/root/vless-backups/                # 配置备份
+/var/www/html/                      # 伪装网站目录
 ```
 
 ### 服务管理
 ```bash
-# 启动服务
-systemctl start xray nginx
+# VPS安全服务
+systemctl restart ssh          # 重启SSH服务
+systemctl restart fail2ban     # 重启Fail2ban服务
+ufw reload                      # 重载防火墙规则
 
-# 停止服务
-systemctl stop xray nginx
-
-# 重启服务
-systemctl restart xray nginx
-
-# 查看状态
-systemctl status xray nginx
-
-# 启用自启动
-systemctl enable xray nginx
+# Reality代理服务
+systemctl start xray nginx     # 启动服务
+systemctl stop xray nginx      # 停止服务
+systemctl restart xray nginx   # 重启服务
+systemctl status xray nginx    # 查看状态
+systemctl enable xray nginx    # 启用自启动
 ```
 
 ## 🔒 安全注意事项
 
-1. **Root 权限**: 脚本需要 root 权限运行，请确保在可信环境中使用
-2. **API Token**: Cloudflare API Token 具有敏感权限，请妥善保管
-3. **配置备份**: 重要配置会自动备份到 `/root/vless-backups/`
-4. **防火墙**: 脚本会自动配置 UFW 防火墙，请确保 SSH 端口不被误封
-5. **证书安全**: SSL 证书私钥权限设置为 600，仅 root 可读
+1. **Root 权限**: 两个脚本都需要 root 权限运行，请确保在可信环境中使用
+2. **SSH安全**: 修改SSH端口后请立即测试新端口连接，避免锁定自己
+3. **防火墙配置**: 脚本会自动配置UFW防火墙，确保不会误封SSH端口
+4. **API Token**: Cloudflare API Token具有敏感权限，请妥善保管（仅Reality脚本需要）
+5. **配置备份**: 重要配置会自动备份，安全配置备份到`/root/security-backups/`
+6. **证书安全**: SSL证书私钥权限设置为600，仅root可读
 
 ## 📚 参考资料
 
@@ -323,7 +303,7 @@ systemctl enable xray nginx
 
 ---
 
-**🎯 项目目标**: 提供最专业、最易用、最安全的 VLESS Reality 部署解决方案
+**🎯 项目目标**: 提供最专业、最易用、最安全的VPS安全加固和代理服务部署解决方案
 
 **📧 技术支持**: 如有问题，请通过 GitHub Issues 联系我们
 
