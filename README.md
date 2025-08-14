@@ -31,11 +31,14 @@
 
 ```
 vps/
-├── setup.sh                      # VLESS Reality 终极部署脚本
-└── README.md                     # 项目文档 (本文件)
+├── setup.sh                      # VLESS Reality 终极部署脚本 (原版)
+├── reality-setup.sh               # Reality 一键搭建管理脚本 (新版)
+├── security-hardening.sh          # VPS 安全加固脚本
+├── interactive-security-manager.sh # 交互式安全管理器
+└── README.md                      # 项目文档 (本文件)
 ```
 
-**简洁设计**: 只有两个文件，便于 VPS 部署和管理。
+**功能丰富**: 提供多种脚本选择，满足不同需求。
 
 ## 🔧 功能模块
 
@@ -65,28 +68,94 @@ vps/
 - **域名**: 已解析到服务器的域名
 - **Cloudflare**: Cloudflare API Token（用于 DNS 验证）
 
-### 基本使用
+### 脚本选择
 
-#### 1. 查看帮助信息
+#### 方案一：原版终极部署脚本 (setup.sh)
+适合高级用户，功能完整但交互复杂
+
 ```bash
+# 查看帮助信息
 bash setup.sh --help
-```
 
-#### 2. 正常部署（推荐）
-```bash
+# 正常部署（推荐）
 bash setup.sh
-```
-- 智能检测现有证书，避免不必要的申请
-- 完全幂等性，可安全重复运行
-- 详细的进度显示和状态反馈
 
-#### 3. 强制重新申请证书
-```bash
+# 强制重新申请证书
 bash setup.sh --force
 ```
-- 强制重新申请所有证书
-- 适用于证书测试和问题排查
-- 忽略现有证书的有效期
+
+#### 方案二：新版一键管理脚本 (reality-setup.sh) ⭐推荐
+适合所有用户，界面友好，功能完整
+
+```bash
+# 添加执行权限
+chmod +x reality-setup.sh
+
+# 运行脚本
+sudo ./reality-setup.sh
+```
+
+**新版脚本特点**:
+- 🎯 友好的交互式菜单界面
+- 🔧 完整的安装和管理功能
+- 🔄 支持配置重置和服务管理
+- 📱 自动生成VLESS客户端链接
+- 🗑️ 支持完整卸载功能
+
+## 🎯 新版脚本功能详解 (reality-setup.sh)
+
+### 主菜单功能
+1. **完整安装Reality服务** - 一键安装所有组件
+   - 自动安装系统依赖
+   - 编译安装Nginx（支持必要模块）
+   - 安装Xray和acme.sh
+   - 申请SSL证书
+   - 生成密钥和配置文件
+   - 启动所有服务
+
+2. **服务管理**
+   - 重启Xray服务
+   - 重启Nginx服务
+   - 查看服务状态（详细诊断）
+
+3. **配置管理**
+   - 重置UUID（自动更新配置并重启服务）
+   - 重置密钥对（自动更新配置并重启服务）
+   - 重置ShortIds（自动更新配置并重启服务）
+   - 重置所有配置（一键重置所有参数）
+
+4. **信息查看**
+   - 显示当前配置（域名、UUID、密钥等）
+   - 生成VLESS链接（自动生成客户端连接链接）
+
+5. **系统管理**
+   - 卸载Reality服务（完整清理所有组件）
+
+### 伪装网站选择
+脚本内置20个优质伪装网站：
+- **游戏类**: www.csgo.com
+- **电商类**: shopify.com
+- **工具类**: time.is, ip.sb
+- **生活类**: icook.hk, icook.tw
+- **地区类**: japan.com, malaysia.com, russia.com, singapore.com
+- **技术类**: skk.moe, linux.do
+- **金融类**: www.visa.com.sg, www.visa.com.hk 等
+- **政府类**: www.gco.gov.qa, www.gov.se, www.gov.ua
+- **自定义**: 支持用户输入任意域名
+
+### 配置文件管理
+所有配置存储在 `/etc/reality-config/` 目录：
+```
+/etc/reality-config/
+├── domain.conf          # 主域名
+├── cf-token.conf        # Cloudflare API Token
+├── uuid.conf            # 用户UUID
+├── private-key.conf     # Reality私钥
+├── public-key.conf      # Reality公钥
+├── shortids.conf        # ShortIds配置
+├── fake-site.conf       # 伪装网站
+└── vless-link.txt       # VLESS连接链接
+```
 
 ## 🔍 智能证书处理详解
 
