@@ -3,9 +3,9 @@
 # Reality一键搭建和管理脚本
 # 支持VLESS-HTTP2-REALITY协议配置
 # 作者: VPS Security Tools
-# 版本: 1.0
+# 版本: 2.1 (修复关键漏洞版)
 
-set -e
+# 移除 set -e，改用函数级别错误处理
 
 # 颜色定义
 RED='\033[0;31m'
@@ -35,6 +35,53 @@ log_warning() {
 
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# 错误处理函数
+handle_error() {
+    local exit_code=$1
+    local error_msg="$2"
+    if [[ $exit_code -ne 0 ]]; then
+        log_error "$error_msg"
+        return 1
+    fi
+}
+
+# 检查命令是否存在
+check_command() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        log_error "命令 $1 未找到，请先安装"
+        return 1
+    fi
+}
+
+# 验证变量是否为空
+validate_var() {
+    local var_name="$1"
+    local var_value="$2"
+    if [[ -z "$var_value" ]]; then
+        log_error "$var_name 不能为空"
+        return 1
+    fi
+}
+
+# 验证域名格式
+validate_domain() {
+    local domain="$1"
+    if [[ ! "$domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]?\.[a-zA-Z]{2,}$ ]]; then
+        log_error "域名格式不正确: $domain"
+        return 1
+    fi
+}
+
+# 网络连接检查
+check_network() {
+    log_info "检查网络连接..."
+    if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+        log_error "网络连接失败，请检查网络设置"
+        return 1
+    fi
+    log_success "网络连接正常"
 }
 
 # 检查root权限
@@ -110,29 +157,102 @@ get_fake_site() {
     log_success "伪装网站设置为: $fake_site"
 }
 
+# 验证邮箱格式
+validate_email() {
+    local email="$1"
+    if [[ "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        return 0
+    else
+        log_error "邮箱格式不正确: $email"
+        return 1
+    fi
+}
+
 # 收集用户输入
 collect_user_input() {
     log_info "开始收集配置信息..."
-    
-    # 域名输入
-    read -p "请输入你的域名 (例如: example.com): " domain
-    if [[ -z "$domain" ]]; then
-        log_error "域名不能为空"
-        exit 1
-    fi
-    echo "$domain" > "$CONFIG_DIR/domain.conf"
-    
-    # CF Token输入
-    read -p "请输入Cloudflare API Token: " cf_token
-    if [[ -z "$cf_token" ]]; then
-        log_error "Cloudflare API Token不能为空"
-        exit 1
-    fi
-    echo "$cf_token" > "$CONFIG_DIR/cf-token.conf"
-    
-    # 伪装网站选择
-    get_fake_site
-    
+
+    # 域名输入和验证
+    while true; do
+        read -p "请输入你的域名 (例如: example.com): " domain
+        if validate_var "域名" "$domain" && validate_domain "$domain"; then
+            echo "$domain" > "$CONFIG_DIR/domain.conf"
+            break
+        fi
+        log_warning "请重新输入正确的域名"
+    done
+
+    # 邮箱输入和验证（用于SSL证书）
+    while true; do
+        read -p "请输入你的邮箱地址 (用于SSL证书通知): " email
+        if validate_var "邮箱" "$email" && validate_email "$email"; then
+            echo "$email" > "$CONFIG_DIR/email.conf"
+            break
+        fi
+        log_warning "请重新输入正确的邮箱地址"
+    done
+
+    # CF Token输入和验证
+    while true; do
+        read -p "请输入Cloudflare API Token: " cf_token
+        if validate_var "Cloudflare API Token" "$cf_token"; then
+            # 简单验证Token格式（40个字符的字母数字）
+            if [[ ${#cf_token} -ge 40 && "$cf_token" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                echo "$cf_token" > "$CONFIG_DIR/cf-token.conf"
+                break
+            else
+                log_error "Cloudflare API Token格式不正确"
+            fi
+        fi
+        log_warning "请重新输入正确的Cloudflare API Token"
+    done
+
+    # Reality目标网站配置
+    log_info "配置Reality伪装目标..."
+    echo -e "${YELLOW}Reality目标网站要求：${NC}"
+    echo "• 支持TLS 1.3"
+    echo "• 支持HTTP/2"
+    echo "• 使用x25519密钥交换"
+    echo "• 不使用CDN"
+    echo "• 建议选择大型网站（如Microsoft、Apple等）"
+    echo
+
+    while true; do
+        echo "推荐的Reality目标网站："
+        echo "1. www.microsoft.com"
+        echo "2. www.apple.com"
+        echo "3. www.cloudflare.com"
+        echo "4. www.bing.com"
+        echo "5. 自定义输入"
+
+        read -p "请选择Reality目标网站 (1-5): " reality_choice
+
+        case $reality_choice in
+            1) reality_dest="www.microsoft.com" ;;
+            2) reality_dest="www.apple.com" ;;
+            3) reality_dest="www.cloudflare.com" ;;
+            4) reality_dest="www.bing.com" ;;
+            5)
+                read -p "请输入自定义Reality目标网站: " reality_dest
+                if [[ -z "$reality_dest" ]]; then
+                    log_error "Reality目标网站不能为空"
+                    continue
+                fi
+                ;;
+            *)
+                log_error "无效选择"
+                continue
+                ;;
+        esac
+
+        echo "$reality_dest" > "$CONFIG_DIR/reality-dest.conf"
+        log_success "Reality目标网站设置为: $reality_dest"
+        break
+    done
+
+    # 伪装网站选择（用于Nginx反向代理）
+    get_fake_site || return 1
+
     log_success "配置信息收集完成"
 }
 
@@ -152,13 +272,28 @@ generate_uuid() {
 # 生成密钥对
 generate_keys() {
     if command -v xray >/dev/null 2>&1; then
-        local keys_output=$(xray x25519)
-        local private_key=$(echo "$keys_output" | grep "Private key:" | awk '{print $3}')
-        local public_key=$(echo "$keys_output" | grep "Public key:" | awk '{print $3}')
-        
+        log_info "生成Reality密钥对..."
+
+        # 关键修复：只生成一次密钥对，确保私钥和公钥匹配
+        local key_pair=$(xray x25519)
+        local private_key=$(echo "$key_pair" | awk '/Private key:/ {print $3}')
+        local public_key=$(echo "$key_pair" | awk '/Public key:/ {print $3}')
+
+        # 验证密钥是否成功生成
+        if [[ -z "$private_key" || -z "$public_key" ]]; then
+            log_error "无法生成或提取密钥对，请检查Xray是否正确安装"
+            return 1
+        fi
+
+        # 验证密钥格式（Reality密钥应该是44个字符的base64）
+        if [[ ${#private_key} -ne 44 || ${#public_key} -ne 44 ]]; then
+            log_error "生成的密钥格式不正确"
+            return 1
+        fi
+
         echo "$private_key" > "$CONFIG_DIR/private-key.conf"
         echo "$public_key" > "$CONFIG_DIR/public-key.conf"
-        
+
         log_success "密钥对生成完成"
         log_info "私钥: $private_key"
         log_info "公钥: $public_key"
@@ -187,13 +322,23 @@ generate_short_ids() {
 install_dependencies() {
     log_info "安装系统依赖..."
 
-    # 更新系统并安装基础工具
-    apt update && apt-get install -y curl vim ufw
+    # 检查网络连接
+    check_network || return 1
 
-    # 系统升级和编译依赖安装
-    apt-get update && sudo apt-get upgrade && sudo apt update && sudo apt upgrade -y
-    apt-get install -y gcc g++ libpcre3 libpcre3-dev zlib1g zlib1g-dev \
-        openssl libssl-dev wget sudo make curl socat cron
+    # 更新系统
+    log_info "更新系统包列表..."
+    apt update || { log_error "系统更新失败"; return 1; }
+
+    log_info "升级系统..."
+    apt upgrade -y || { log_error "系统升级失败"; return 1; }
+
+    # 安装所有依赖包（合并安装，提高效率）
+    log_info "安装依赖包..."
+    apt install -y curl vim ufw gcc g++ libpcre3 libpcre3-dev zlib1g zlib1g-dev \
+        openssl libssl-dev wget make socat cron dnsutils || {
+        log_error "依赖包安装失败"
+        return 1
+    }
 
     log_success "系统依赖安装完成"
 }
@@ -201,11 +346,32 @@ install_dependencies() {
 # 安装Nginx
 install_nginx() {
     log_info "开始安装Nginx..."
-    
-    # 下载、编译和安装Nginx（一条命令完成）
-    wget https://nginx.org/download/nginx-1.27.1.tar.gz && \
-    tar -xvf nginx-1.27.1.tar.gz && \
-    cd nginx-1.27.1 && \
+
+    # 检查是否已安装
+    if command -v nginx >/dev/null 2>&1; then
+        log_warning "Nginx已安装，跳过编译安装"
+        return 0
+    fi
+
+    # 创建临时目录
+    local temp_dir="/tmp/nginx-build"
+    mkdir -p "$temp_dir" || { log_error "创建临时目录失败"; return 1; }
+    cd "$temp_dir" || { log_error "进入临时目录失败"; return 1; }
+
+    # 下载Nginx源码
+    log_info "下载Nginx源码..."
+    wget https://nginx.org/download/nginx-1.27.1.tar.gz || {
+        log_error "Nginx源码下载失败"
+        return 1
+    }
+
+    # 解压源码
+    log_info "解压Nginx源码..."
+    tar -xzf nginx-1.27.1.tar.gz || { log_error "解压失败"; return 1; }
+    cd nginx-1.27.1 || { log_error "进入源码目录失败"; return 1; }
+
+    # 配置编译选项
+    log_info "配置Nginx编译选项..."
     ./configure --prefix=/usr/local/nginx \
         --sbin-path=/usr/sbin/nginx \
         --conf-path=/etc/nginx/nginx.conf \
@@ -216,9 +382,22 @@ install_nginx() {
         --with-stream \
         --with-stream_ssl_module \
         --with-stream_ssl_preread_module \
-        --with-http_v2_module && \
-    make && make install && cd ~
-    
+        --with-http_v2_module || {
+        log_error "Nginx配置失败"
+        return 1
+    }
+
+    # 编译
+    log_info "编译Nginx..."
+    make || { log_error "Nginx编译失败"; return 1; }
+
+    # 安装
+    log_info "安装Nginx..."
+    make install || { log_error "Nginx安装失败"; return 1; }
+
+    # 清理临时文件
+    cd / && rm -rf "$temp_dir"
+
     log_success "Nginx编译安装完成"
 }
 
@@ -255,28 +434,75 @@ EOF
 # 安装acme.sh
 install_acme() {
     log_info "安装acme.sh证书工具..."
-    
-    curl https://get.acme.sh | sh
-    ln -sf /root/.acme.sh/acme.sh /usr/local/bin/acme.sh
-    acme.sh --set-default-ca --server letsencrypt
-    
+
+    # 检查是否已安装
+    if [[ -f "/usr/local/bin/acme.sh" ]] && [[ -x "/usr/local/bin/acme.sh" ]]; then
+        log_warning "acme.sh已安装，跳过安装"
+        return 0
+    fi
+
+    # 下载并安装acme.sh
+    log_info "下载acme.sh..."
+    curl -s https://get.acme.sh | sh || {
+        log_error "acme.sh下载安装失败"
+        return 1
+    }
+
+    # 创建软链接
+    if [[ -f "/root/.acme.sh/acme.sh" ]]; then
+        ln -sf /root/.acme.sh/acme.sh /usr/local/bin/acme.sh || {
+            log_error "创建acme.sh软链接失败"
+            return 1
+        }
+    else
+        log_error "acme.sh安装文件未找到"
+        return 1
+    fi
+
+    # 设置默认CA
+    /usr/local/bin/acme.sh --set-default-ca --server letsencrypt || {
+        log_error "设置acme.sh默认CA失败"
+        return 1
+    }
+
     log_success "acme.sh安装完成"
 }
 
 # 验证域名解析
 verify_domain_resolution() {
     local domain=$(cat "$CONFIG_DIR/domain.conf")
-    local server_ip=$(curl -s ifconfig.me)
+    validate_var "域名" "$domain" || return 1
 
     log_info "验证域名解析..."
+
+    # 获取服务器IP
+    local server_ip=$(curl -s --connect-timeout 10 ifconfig.me)
+    if [[ -z "$server_ip" ]]; then
+        log_error "无法获取服务器IP地址"
+        return 1
+    fi
     log_info "服务器IP: $server_ip"
 
-    local resolved_ip=$(dig +short "$domain" @8.8.8.8)
-    if [[ "$resolved_ip" == "$server_ip" ]]; then
+    # 检查dig命令
+    check_command "dig" || return 1
+
+    # 解析域名
+    local resolved_ip=$(dig +short "$domain" @8.8.8.8 | head -n1)
+    if [[ -z "$resolved_ip" ]]; then
+        log_error "域名解析失败，请检查域名是否正确配置"
+        log_warning "请确保域名已正确解析到服务器IP: $server_ip"
+        read -p "域名解析未完成，建议稍后再试。是否强制继续？(y/N): " force_continue
+        if [[ "$force_continue" != "y" && "$force_continue" != "Y" ]]; then
+            log_info "安装已取消，请配置域名解析后重试"
+            return 1
+        fi
+    elif [[ "$resolved_ip" == "$server_ip" ]]; then
         log_success "域名解析验证成功"
         return 0
     else
-        log_warning "域名解析可能未生效，解析IP: $resolved_ip，服务器IP: $server_ip"
+        log_warning "域名解析IP与服务器IP不匹配"
+        log_warning "解析IP: $resolved_ip，服务器IP: $server_ip"
+        log_warning "这可能导致SSL证书申请失败"
         read -p "是否继续安装？(y/N): " continue_install
         if [[ "$continue_install" != "y" && "$continue_install" != "Y" ]]; then
             log_info "安装已取消"
@@ -324,12 +550,78 @@ install_xray() {
     log_success "Xray安装完成"
 }
 
+# 验证配置变量
+validate_config_vars() {
+    log_info "验证配置变量..."
+
+    # 检查必要的配置文件
+    local config_files=("domain.conf" "fake-site.conf")
+    for file in "${config_files[@]}"; do
+        if [[ ! -f "$CONFIG_DIR/$file" ]]; then
+            log_error "配置文件 $file 不存在"
+            return 1
+        fi
+    done
+
+    # 验证域名
+    local domain=$(cat "$CONFIG_DIR/domain.conf")
+    validate_var "域名" "$domain" || return 1
+    validate_domain "$domain" || return 1
+
+    # 验证伪装网站
+    local fake_site=$(cat "$CONFIG_DIR/fake-site.conf")
+    validate_var "伪装网站" "$fake_site" || return 1
+
+    log_success "配置变量验证通过"
+}
+
 # 创建Nginx配置文件
 create_nginx_config() {
     log_info "创建Nginx配置文件..."
 
+    # 验证配置变量
+    validate_config_vars || return 1
+
     local domain=$(cat "$CONFIG_DIR/domain.conf")
     local fake_site=$(cat "$CONFIG_DIR/fake-site.conf")
+
+    # 备份现有配置
+    if [[ -f "$NGINX_CONFIG" ]]; then
+        cp "$NGINX_CONFIG" "$NGINX_CONFIG.backup.$(date +%Y%m%d_%H%M%S)" || {
+            log_warning "备份Nginx配置失败"
+        }
+    fi
+
+    # 创建简单的伪装网站
+    log_info "创建伪装网站..."
+    mkdir -p /var/www/html
+    cat > /var/www/html/index.html << 'HTML'
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>欢迎访问</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; text-align: center; }
+        p { line-height: 1.6; color: #666; }
+        .footer { text-align: center; margin-top: 30px; color: #999; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>网站建设中</h1>
+        <p>感谢您的访问！我们的网站正在建设中，敬请期待。</p>
+        <p>如有任何问题，请联系我们的技术支持团队。</p>
+        <div class="footer">
+            <p>&copy; 2024 版权所有</p>
+        </div>
+    </div>
+</body>
+</html>
+HTML
 
     cat > "$NGINX_CONFIG" << EOF
 user root;
@@ -343,94 +635,128 @@ events {
 }
 
 http {
-    log_format main '[\$time_local] \$proxy_protocol_addr "\$http_referer" "\$http_user_agent"';
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    log_format main '[\$time_local] \$remote_addr "\$request" \$status \$body_bytes_sent "\$http_referer" "\$http_user_agent"';
     access_log /usr/local/nginx/logs/access.log main;
 
-    map \$http_upgrade \$connection_upgrade {
-        default upgrade;
-        ""      close;
-    }
+    sendfile        on;
+    tcp_nopush      on;
+    tcp_nodelay     on;
+    keepalive_timeout  65;
+    types_hash_max_size 2048;
 
-    map \$proxy_protocol_addr \$proxy_forwarded_elem {
-        ~^[0-9.]+\$        "for=\$proxy_protocol_addr";
-        ~^[0-9A-Fa-f:.]+\$ "for=\"[\$proxy_protocol_addr]\"";
-        default           "for=unknown";
-    }
-
-    map \$http_forwarded \$proxy_add_forwarded {
-        "~^(,[ \\\\t]*)*([!#\$%&'*+.^_\`|~0-9A-Za-z-]+=([!#\$%&'*+.^_\`|~0-9A-Za-z-]+|\"([\\\\t \\\\x21\\\\x23-\\\\x5B\\\\x5D-\\\\x7E\\\\x80-\\\\xFF]|\\\\\\\\[\\\\t \\\\x21-\\\\x7E\\\\x80-\\\\xFF])*\"))?(;([!#\$%&'*+.^_\`|~0-9A-Za-z-]+=([!#\$%&'*+.^_\`|~0-9A-Za-z-]+|\"([\\\\t \\\\x21\\\\x23-\\\\x5B\\\\x5D-\\\\x7E\\\\x80-\\\\xFF]|\\\\\\\\[\\\\t \\\\x21-\\\\x7E\\\\x80-\\\\xFF])*\"))?)*([ \\\\t]*,([ \\\\t]*([!#\$%&'*+.^_\`|~0-9A-Za-z-]+=([!#\$%&'*+.^_\`|~0-9A-Za-z-]+|\"([\\\\t \\\\x21\\\\x23-\\\\x5B\\\\x5D-\\\\x7E\\\\x80-\\\\xFF]|\\\\\\\\[\\\\t \\\\x21-\\\\x7E\\\\x80-\\\\xFF])*\"))?(;([!#\$%&'*+.^_\`|~0-9A-Za-z-]+=([!#\$%&'*+.^_\`|~0-9A-Za-z-]+|\"([\\\\t \\\\x21\\\\x23-\\\\x5B\\\\x5D-\\\\x7E\\\\x80-\\\\xFF]|\\\\\\\\[\\\\t \\\\x21-\\\\x7E\\\\x80-\\\\xFF])*\"))?)*)?)*\$" "\$http_forwarded, \$proxy_forwarded_elem";
-        default "\$proxy_forwarded_elem";
-    }
-
+    # HTTP重定向到HTTPS
     server {
         listen 80;
         listen [::]:80;
-        return 301 https://\$host\$request_uri;
+        server_name $domain;
+        return 301 https://\$server_name\$request_uri;
     }
 
+    # 主HTTPS服务器 - 伪装网站
     server {
-        listen                  127.0.0.1:8003 ssl default_server;
-        ssl_reject_handshake    on;
-        ssl_protocols           TLSv1.2 TLSv1.3;
-        ssl_session_timeout     1h;
-        ssl_session_cache       shared:SSL:10m;
-        ssl_early_data          on;
-    }
+        listen 443 ssl http2;
+        listen [::]:443 ssl http2;
+        server_name $domain;
 
-    server {
-        listen                     127.0.0.1:8003 ssl proxy_protocol;
-        set_real_ip_from           127.0.0.1;
-        real_ip_header             proxy_protocol;
-        server_name                $domain;
+        # SSL配置
+        ssl_certificate /etc/ssl/private/fullchain.cer;
+        ssl_certificate_key /etc/ssl/private/private.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305;
+        ssl_prefer_server_ciphers off;
+        ssl_session_cache shared:SSL:10m;
+        ssl_session_timeout 10m;
 
-        ssl_certificate            /etc/ssl/private/fullchain.cer;
-        ssl_certificate_key        /etc/ssl/private/private.key;
-        ssl_protocols              TLSv1.2 TLSv1.3;
-        ssl_ciphers                TLS13_AES_128_GCM_SHA256:TLS13_AES_256_GCM_SHA384:TLS13_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305;
-        ssl_session_tickets        on;
-        ssl_stapling               on;
-        ssl_stapling_verify        on;
-        resolver                   1.1.1.1 valid=60s;
-        resolver_timeout           2s;
+        # 安全头
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header X-Frame-Options DENY always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-XSS-Protection "1; mode=block" always;
 
+        # 伪装网站根目录
+        root /var/www/html;
+        index index.html index.htm;
+
+        # 主页面
         location / {
-            sub_filter                            \$proxy_host \$host;
-            sub_filter_once                       off;
-            set \$website                          $fake_site;
-            proxy_pass                            https://\$website;
-            resolver                              1.1.1.1;
-            proxy_set_header Host                 \$proxy_host;
-            proxy_http_version                    1.1;
-            proxy_cache_bypass                    \$http_upgrade;
-            proxy_ssl_server_name                 on;
-            proxy_set_header Upgrade              \$http_upgrade;
-            proxy_set_header Connection           \$connection_upgrade;
-            proxy_set_header X-Real-IP            \$proxy_protocol_addr;
-            proxy_set_header Forwarded            \$proxy_add_forwarded;
-            proxy_set_header X-Forwarded-For      \$proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto    \$scheme;
-            proxy_set_header X-Forwarded-Host     \$host;
-            proxy_set_header X-Forwarded-Port     \$server_port;
-            proxy_connect_timeout                 60s;
-            proxy_send_timeout                    60s;
-            proxy_read_timeout                    60s;
-            proxy_set_header Early-Data           \$ssl_early_data;
+            try_files \$uri \$uri/ =404;
+        }
+
+        # 静态资源缓存
+        location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+
+        # 隐藏nginx版本
+        server_tokens off;
+
+        # 错误页面
+        error_page 404 /404.html;
+        error_page 500 502 503 504 /50x.html;
+        location = /50x.html {
+            root /var/www/html;
         }
     }
 }
-EOF
 
     log_success "Nginx配置文件创建完成"
+}
+
+    log_success "Nginx配置文件创建完成"
+}
+
+# 验证Xray配置变量
+validate_xray_config_vars() {
+    log_info "验证Xray配置变量..."
+
+    # 检查必要的配置文件
+    local config_files=("domain.conf" "uuid.conf" "private-key.conf" "shortids.conf" "reality-dest.conf")
+    for file in "${config_files[@]}"; do
+        if [[ ! -f "$CONFIG_DIR/$file" ]]; then
+            log_error "配置文件 $file 不存在"
+            return 1
+        fi
+    done
+
+    # 验证各个配置项
+    local domain=$(cat "$CONFIG_DIR/domain.conf")
+    local uuid=$(cat "$CONFIG_DIR/uuid.conf")
+    local private_key=$(cat "$CONFIG_DIR/private-key.conf")
+    local short_ids=$(cat "$CONFIG_DIR/shortids.conf")
+    local reality_dest=$(cat "$CONFIG_DIR/reality-dest.conf")
+
+    validate_var "域名" "$domain" || return 1
+    validate_var "UUID" "$uuid" || return 1
+    validate_var "私钥" "$private_key" || return 1
+    validate_var "ShortIds" "$short_ids" || return 1
+    validate_var "Reality目标" "$reality_dest" || return 1
+
+    log_success "Xray配置变量验证通过"
 }
 
 # 创建Xray配置文件
 create_xray_config() {
     log_info "创建Xray配置文件..."
 
+    # 验证配置变量
+    validate_xray_config_vars || return 1
+
     local domain=$(cat "$CONFIG_DIR/domain.conf")
     local uuid=$(cat "$CONFIG_DIR/uuid.conf")
     local private_key=$(cat "$CONFIG_DIR/private-key.conf")
     local short_ids=$(cat "$CONFIG_DIR/shortids.conf")
+    local reality_dest=$(cat "$CONFIG_DIR/reality-dest.conf")
+
+    # 备份现有配置
+    if [[ -f "$XRAY_CONFIG" ]]; then
+        cp "$XRAY_CONFIG" "$XRAY_CONFIG.backup.$(date +%Y%m%d_%H%M%S)" || {
+            log_warning "备份Xray配置失败"
+        }
+    fi
 
     cat > "$XRAY_CONFIG" << EOF
 {
@@ -475,10 +801,10 @@ create_xray_config() {
                 "security": "reality",
                 "realitySettings": {
                     "show": false,
-                    "dest": "8003",
+                    "dest": "$reality_dest:443",
                     "xver": 1,
                     "serverNames": [
-                        "$domain"
+                        "$reality_dest"
                     ],
                     "privateKey": "$private_key",
                     "shortIds": $short_ids
@@ -557,42 +883,130 @@ generate_vless_link() {
 uninstall_reality() {
     log_info "开始卸载Reality服务..."
 
+    # 创建备份目录
+    local backup_dir="/root/reality-backup-$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$backup_dir"
+    log_info "配置备份目录: $backup_dir"
+
+    # 备份配置文件
+    if [[ -d "$CONFIG_DIR" ]]; then
+        cp -r "$CONFIG_DIR" "$backup_dir/" 2>/dev/null || true
+        log_info "配置文件已备份"
+    fi
+
     # 停止服务
+    log_info "停止服务..."
     systemctl stop nginx 2>/dev/null || true
     systemctl stop xray 2>/dev/null || true
     systemctl disable nginx 2>/dev/null || true
     systemctl disable xray 2>/dev/null || true
 
     # 删除服务文件
+    log_info "删除服务文件..."
     rm -f "$NGINX_SERVICE"
     systemctl daemon-reload
 
     # 删除配置文件
+    log_info "删除配置文件..."
     rm -rf "$CONFIG_DIR"
     rm -f "$NGINX_CONFIG"
     rm -f "$XRAY_CONFIG"
-
-    # 删除SSL证书
-    rm -rf /etc/ssl/private
-
-    # 删除Nginx
-    rm -f /usr/sbin/nginx
-    rm -rf /usr/local/nginx
     rm -rf /etc/nginx
 
+    # 删除SSL证书
+    log_info "删除SSL证书..."
+    if [[ -d "/etc/ssl/private" ]]; then
+        cp -r /etc/ssl/private "$backup_dir/" 2>/dev/null || true
+        rm -rf /etc/ssl/private
+    fi
+
+    # 删除Nginx
+    log_info "卸载Nginx..."
+    rm -f /usr/sbin/nginx
+    rm -rf /usr/local/nginx
+
     # 卸载Xray
+    log_info "卸载Xray..."
     if command -v xray >/dev/null 2>&1; then
-        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove --purge
+        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove --purge 2>/dev/null || {
+            log_warning "Xray自动卸载失败，手动清理..."
+            rm -f /usr/local/bin/xray
+            rm -rf /usr/local/etc/xray
+            rm -f /etc/systemd/system/xray.service
+            systemctl daemon-reload
+        }
     fi
 
     # 删除acme.sh
+    log_info "卸载acme.sh..."
     if [[ -d "/root/.acme.sh" ]]; then
-        /root/.acme.sh/acme.sh --uninstall
+        /root/.acme.sh/acme.sh --uninstall 2>/dev/null || true
         rm -rf /root/.acme.sh
         rm -f /usr/local/bin/acme.sh
     fi
 
+    # 清理临时文件
+    log_info "清理临时文件..."
+    rm -f /tmp/tcp.sh /tmp/d11.sh /tmp/nginx-*.tar.gz
+    rm -rf /tmp/nginx-build
+
+    # 清理编译依赖（可选）
+    read -p "是否卸载编译依赖包？(y/N): " remove_deps
+    if [[ "$remove_deps" == "y" || "$remove_deps" == "Y" ]]; then
+        log_info "卸载编译依赖..."
+        apt autoremove -y gcc g++ libpcre3-dev zlib1g-dev libssl-dev make 2>/dev/null || true
+    fi
+
     log_success "Reality服务卸载完成"
+    log_info "配置备份保存在: $backup_dir"
+}
+
+# 检查脚本更新
+check_script_update() {
+    log_info "检查脚本更新..."
+
+    local current_version="2.0"
+    local script_url="https://raw.githubusercontent.com/your-repo/vps-security-tools/main/reality-setup.sh"
+
+    # 检查网络连接
+    check_network || return 1
+
+    # 获取远程版本信息
+    local remote_version=$(curl -s --connect-timeout 10 "$script_url" | grep "# 版本:" | head -n1 | awk '{print $3}')
+
+    if [[ -z "$remote_version" ]]; then
+        log_error "无法获取远程版本信息"
+        return 1
+    fi
+
+    echo -e "${BLUE}=== 版本信息 ===${NC}"
+    echo "当前版本: $current_version"
+    echo "远程版本: $remote_version"
+
+    if [[ "$remote_version" != "$current_version" ]]; then
+        echo -e "${YELLOW}发现新版本！${NC}"
+        read -p "是否下载最新版本？(y/N): " update_choice
+        if [[ "$update_choice" == "y" || "$update_choice" == "Y" ]]; then
+            log_info "下载最新版本..."
+            local backup_script="reality-setup-backup-$(date +%Y%m%d_%H%M%S).sh"
+            cp "$0" "$backup_script" || {
+                log_error "备份当前脚本失败"
+                return 1
+            }
+
+            if curl -s --connect-timeout 30 -o "reality-setup-new.sh" "$script_url"; then
+                chmod +x reality-setup-new.sh
+                log_success "新版本下载完成: reality-setup-new.sh"
+                log_info "当前版本已备份为: $backup_script"
+                log_warning "请手动替换脚本文件并重新运行"
+            else
+                log_error "下载失败"
+                return 1
+            fi
+        fi
+    else
+        log_success "当前已是最新版本"
+    fi
 }
 
 # 安装BBR加速
@@ -605,11 +1019,29 @@ install_bbr() {
         return 0
     fi
 
+    # 警告用户外部脚本风险
+    log_warning "即将下载并执行外部BBR安装脚本"
+    log_warning "脚本来源: http://sh.xdmb.xyz/tcp.sh"
+    read -p "是否继续？(y/N): " confirm_bbr
+    if [[ "$confirm_bbr" != "y" && "$confirm_bbr" != "Y" ]]; then
+        log_info "用户取消BBR安装"
+        return 1
+    fi
+
+    # 检查网络连接
+    check_network || return 1
+
     # 使用一键脚本安装BBR
-    log_info "下载并运行BBR安装脚本..."
-    if wget -O /tmp/tcp.sh http://sh.xdmb.xyz/tcp.sh; then
-        bash /tmp/tcp.sh
-        log_success "BBR安装脚本执行完成"
+    log_info "下载BBR安装脚本..."
+    if wget --timeout=30 -O /tmp/tcp.sh http://sh.xdmb.xyz/tcp.sh; then
+        log_info "执行BBR安装脚本..."
+        log_warning "脚本可能需要用户交互，请按提示操作"
+        bash /tmp/tcp.sh || {
+            log_warning "BBR脚本执行可能失败，尝试手动配置..."
+            manual_bbr_config
+        }
+        # 清理临时文件
+        rm -f /tmp/tcp.sh
     else
         log_warning "BBR一键脚本下载失败，尝试手动配置..."
         manual_bbr_config
@@ -733,11 +1165,23 @@ check_installation_status() {
     echo
 }
 
+# 优雅退出处理
+cleanup_and_exit() {
+    log_info "正在清理临时文件..."
+    rm -f /tmp/tcp.sh /tmp/d11.sh 2>/dev/null
+    log_info "感谢使用Reality一键搭建脚本！"
+    exit 0
+}
+
+# 设置信号处理
+trap cleanup_and_exit SIGINT SIGTERM
+
 # 主菜单
 show_main_menu() {
     clear
     echo -e "${BLUE}================================${NC}"
     echo -e "${BLUE}    Reality 一键搭建管理脚本    ${NC}"
+    echo -e "${BLUE}    版本: 2.0 (优化版)          ${NC}"
     echo -e "${BLUE}================================${NC}"
     echo
     check_installation_status
@@ -754,7 +1198,8 @@ show_main_menu() {
     echo "11. 安装BBR加速"
     echo "12. TCP窗口调优"
     echo "13. 检查BBR状态"
-    echo "14. 卸载Reality服务"
+    echo "14. 检查脚本更新"
+    echo "15. 卸载Reality服务"
     echo "0. 退出"
     echo
 }
@@ -766,30 +1211,55 @@ main() {
     
     while true; do
         show_main_menu
-        read -p "请选择操作 (0-14): " choice
+        read -p "请选择操作 (0-15): " choice
         
         case $choice in
             1)
                 log_info "开始完整安装Reality服务..."
-                collect_user_input
-                verify_domain_resolution || continue
-                install_dependencies
-                install_nginx
-                create_nginx_service
-                install_acme
-                request_certificate || continue
-                install_xray
-                generate_uuid
-                generate_keys
-                generate_short_ids
-                create_nginx_config
-                create_xray_config
 
-                # 启动服务
-                log_info "启动服务..."
-                systemctl start nginx
-                systemctl start xray
-                systemctl enable xray
+                # 显示安装摘要
+                echo -e "${BLUE}=== 安装摘要 ===${NC}"
+                echo "即将安装以下组件："
+                echo "• 系统依赖包 (gcc, nginx编译依赖等)"
+                echo "• Nginx (从源码编译)"
+                echo "• Xray (官方安装脚本)"
+                echo "• acme.sh (SSL证书工具)"
+                echo "• Reality配置文件"
+                echo
+                read -p "确认开始安装？(y/N): " confirm_install
+                if [[ "$confirm_install" != "y" && "$confirm_install" != "Y" ]]; then
+                    log_info "安装已取消"
+                    continue
+                fi
+
+                # 分阶段安装
+                log_info "[1/6] 收集配置信息..."
+                collect_user_input || continue
+
+                log_info "[2/6] 验证域名解析..."
+                verify_domain_resolution || continue
+
+                log_info "[3/6] 安装系统依赖..."
+                install_dependencies || continue
+
+                log_info "[4/6] 安装和配置服务..."
+                install_nginx || continue
+                create_nginx_service || continue
+                install_acme || continue
+                request_certificate || continue
+                install_xray || continue
+
+                log_info "[5/6] 生成配置文件..."
+                generate_uuid || continue
+                generate_keys || continue
+                generate_short_ids || continue
+                create_nginx_config || continue
+                create_xray_config || continue
+
+                log_info "[6/6] 启动服务..."
+                systemctl start nginx || { log_error "Nginx启动失败"; continue; }
+                systemctl start xray || { log_error "Xray启动失败"; continue; }
+                systemctl enable xray || { log_warning "Xray自启动设置失败"; }
 
                 # 检查服务状态
                 if systemctl is-active --quiet nginx && systemctl is-active --quiet xray; then
@@ -810,6 +1280,7 @@ main() {
                     fi
                 else
                     log_error "服务启动失败，请检查配置"
+                    log_info "可以使用菜单选项4查看详细状态"
                 fi
                 read -p "按回车键继续..."
                 ;;
@@ -876,6 +1347,9 @@ main() {
                 if [[ -f "$CONFIG_DIR/domain.conf" ]]; then
                     echo "域名: $(cat $CONFIG_DIR/domain.conf)"
                 fi
+                if [[ -f "$CONFIG_DIR/email.conf" ]]; then
+                    echo "邮箱: $(cat $CONFIG_DIR/email.conf)"
+                fi
                 if [[ -f "$CONFIG_DIR/uuid.conf" ]]; then
                     echo "UUID: $(cat $CONFIG_DIR/uuid.conf)"
                 fi
@@ -885,8 +1359,16 @@ main() {
                 if [[ -f "$CONFIG_DIR/shortids.conf" ]]; then
                     echo "ShortIds: $(cat $CONFIG_DIR/shortids.conf)"
                 fi
+                if [[ -f "$CONFIG_DIR/reality-dest.conf" ]]; then
+                    echo "Reality目标: $(cat $CONFIG_DIR/reality-dest.conf)"
+                fi
                 if [[ -f "$CONFIG_DIR/fake-site.conf" ]]; then
-                    echo "伪装网站: $(cat $CONFIG_DIR/fake-site.conf)"
+                    echo "Nginx伪装网站: $(cat $CONFIG_DIR/fake-site.conf)"
+                fi
+                if [[ -f "$CONFIG_DIR/vless-link.txt" ]]; then
+                    echo
+                    echo -e "${GREEN}VLESS链接:${NC}"
+                    cat $CONFIG_DIR/vless-link.txt
                 fi
                 read -p "按回车键继续..."
                 ;;
@@ -912,6 +1394,10 @@ main() {
                 read -p "按回车键继续..."
                 ;;
             14)
+                check_script_update
+                read -p "按回车键继续..."
+                ;;
+            15)
                 log_warning "卸载Reality服务将删除所有配置和证书"
                 read -p "确认卸载？(y/N): " confirm_uninstall
                 if [[ "$confirm_uninstall" == "y" || "$confirm_uninstall" == "Y" ]]; then
@@ -920,8 +1406,7 @@ main() {
                 read -p "按回车键继续..."
                 ;;
             0)
-                log_info "退出脚本"
-                exit 0
+                cleanup_and_exit
                 ;;
             *)
                 log_error "无效选择，请重新输入"
