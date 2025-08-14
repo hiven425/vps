@@ -40,7 +40,7 @@ fi
 ACME_FORCE_FLAG=""
 if [[ "$1" == "--force" ]]; then
     echo -e "\033[1;33m[WARN]\033[0m 检测到 --force 参数，将强制重新申请证书。"
-    echo -e "\033[0;34m[INFO]\033[0m 这将忽略现有证书的有效期，强制重新申请新证书。"
+    echo -e "\033[0;34m[INFO]\033[0m 这将删除现有证书并重新申请新证书。"
     ACME_FORCE_FLAG="--force"
 fi
 
@@ -210,8 +210,7 @@ show_main_menu() {
     echo -e "${WHITE}║  4. 检查服务运行状态                                            ║${NC}"
     echo -e "${WHITE}║  5. 查看客户端连接信息                                          ║${NC}"
     echo -e "${WHITE}║  6. 卸载服务                                                    ║${NC}"
-    echo -e "${WHITE}║  7. 修改SSH端口                                                 ║${NC}"
-    echo -e "${WHITE}║  8. 退出                                                        ║${NC}"
+    echo -e "${WHITE}║  7. 退出                                                        ║${NC}"
     echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${YELLOW}║  提示: 支持 bash setup.sh --force 强制重新申请证书             ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════╝${NC}"
@@ -401,63 +400,140 @@ setup_ssl_certificate() {
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt 2>/dev/null || true
     ~/.acme.sh/acme.sh --register-account -m "admin@${MY_DOMAIN}" --server letsencrypt 2>/dev/null || true
 
-    # 智能证书申请流程 - 这是核心优化！
-    log_info "正在检查并申请 SSL 证书..."
-
-    # 执行 issue 命令，并附带可能的 --force 标志
-    ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --ecc $ACME_FORCE_FLAG
-
-    # 检查 issue 命令的退出状态码
-    ISSUE_STATUS=$?
-
-    if [ "$ISSUE_STATUS" -eq 0 ]; then
-        log_success "新证书已成功签发！"
-    elif [ "$ISSUE_STATUS" -eq 2 ]; then
-        # 这是关键的用户沟通！
-        log_info "证书已存在且在有效期内。跳过续期是正确的行为。"
-        log_info "这不是错误 - acme.sh 智能地避免了不必要的证书申请。"
-    else
-        log_error "证书申请失败，状态码: $ISSUE_STATUS"
-        log_error "请检查以下可能的原因："
-        log_error "1. Cloudflare API Token 是否正确"
-        log_error "2. 域名 DNS 是否指向 Cloudflare"
-        log_error "3. 网络连接是否正常"
-        log_info "详细错误信息请查看: /root/.acme.sh/acme.sh.log"
-        echo ""
-        log_info "显示最后 10 行 acme.sh 日志："
-        tail -n 10 /root/.acme.sh/acme.sh.log 2>/dev/null || echo "无法读取 acme.sh 日志文件"
-        exit 1
+    # 如果启用了 --force 参数，先删除现有证书
+    if [[ -n "$ACME_FORCE_FLAG" ]]; then
+        log_info "强制模式：删除现有证书文件..."
+        rm -rf "/root/.acme.sh/${MY_DOMAIN}_ecc"
+        rm -f "/etc/ssl/private/fullchain.cer"
+        rm -f "/etc/ssl/private/private.key"
+        log_info "现有证书已删除"
     fi
 
-    # 无论 issue 的结果是新建(0)还是跳过(2)，都必须执行 install-cert
-    log_info "正在确保证书被正确安装到 Nginx 配置目录..."
+    # 智能证书申请流程 - 增强调试版本
+    log_info "正在检查并申请 SSL 证书..."
+    log_debug "执行命令: ~/.acme.sh/acme.sh --issue --dns dns_cf -d \"$MY_DOMAIN\" --ecc $ACME_FORCE_FLAG"
+
+    # 如果不是强制模式，先尝试使用 staging 环境测试
+    if [[ -z "$ACME_FORCE_FLAG" ]]; then
+        log_info "首先使用 staging 环境测试证书申请..."
+        ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --log --staging
+        STAGING_STATUS=$?
+        log_debug "staging 测试状态码: $STAGING_STATUS"
+        
+        if [ "$STAGING_STATUS" -eq 0 ]; then
+            log_success "staging 环境测试通过，现在申请正式证书..."
+            # 删除 staging 证书
+            rm -rf "/root/.acme.sh/${MY_DOMAIN}_ecc"
+            # 申请正式证书
+            ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --log --force
+            ISSUE_STATUS=$?
+        elif [ "$STAGING_STATUS" -eq 2 ]; then
+            log_info "staging 环境显示证书已存在，直接尝试正式环境..."
+            ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --ecc
+            ISSUE_STATUS=$?
+        else
+            log_error "staging 环境测试失败，状态码: $STAGING_STATUS"
+            log_info "删除可能损坏的证书文件并重试..."
+            rm -rf "/root/.acme.sh/${MY_DOMAIN}_ecc"
+            ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --log --force
+            ISSUE_STATUS=$?
+        fi
+    else
+        # 强制模式直接申请
+        ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --ecc $ACME_FORCE_FLAG
+        ISSUE_STATUS=$?
+    fi
+
+    # 检查最终的申请状态
+    log_debug "最终申请状态码: $ISSUE_STATUS"
+
+    if [ "$ISSUE_STATUS" -eq 0 ]; then
+        log_success "证书申请成功！"
+    elif [ "$ISSUE_STATUS" -eq 2 ]; then
+        log_info "证书已存在且有效，现在验证是否可以正常安装..."
+        # 验证证书文件是否存在
+        if [ ! -f "/root/.acme.sh/${MY_DOMAIN}_ecc/fullchain.cer" ]; then
+            log_warn "证书文件不存在，删除证书目录并重新申请..."
+            rm -rf "/root/.acme.sh/${MY_DOMAIN}_ecc"
+            ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --log --force
+            ISSUE_STATUS=$?
+            if [ "$ISSUE_STATUS" -ne 0 ]; then
+                log_error "强制重新申请失败，状态码: $ISSUE_STATUS"
+                exit 1
+            fi
+        fi
+    else
+        log_error "证书申请失败，状态码: $ISSUE_STATUS"
+        log_info "删除可能损坏的证书目录并重试..."
+        rm -rf "/root/.acme.sh/${MY_DOMAIN}_ecc"
+        ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --log --force
+        RETRY_STATUS=$?
+        if [ "$RETRY_STATUS" -ne 0 ]; then
+            log_error "重试申请失败，状态码: $RETRY_STATUS"
+            log_error "请检查以下可能的原因："
+            log_error "1. Cloudflare API Token 是否正确"
+            log_error "2. 域名 DNS 是否指向 Cloudflare"
+            log_error "3. 网络连接是否正常"
+            log_info "详细错误信息请查看: /root/.acme.sh/acme.sh.log"
+            echo ""
+            log_info "显示最后 10 行 acme.sh 日志："
+            tail -n 10 /root/.acme.sh/acme.sh.log 2>/dev/null || echo "无法读取 acme.sh 日志文件"
+            exit 1
+        fi
+    fi
+
+    # 无论 issue 的结果如何，都必须执行 install-cert
+    log_info "正在安装证书到 Nginx 配置目录..."
 
     # 先检查证书是否存在
     if [ ! -f "/root/.acme.sh/${MY_DOMAIN}_ecc/fullchain.cer" ]; then
         log_error "证书文件不存在: /root/.acme.sh/${MY_DOMAIN}_ecc/fullchain.cer"
-        log_info "可能的原因："
-        log_info "1. 域名格式不正确"
-        log_info "2. acme.sh 证书申请实际失败"
-        log_info "3. 证书文件路径变更"
-        exit 1
+        log_info "删除证书目录并重新申请..."
+        rm -rf "/root/.acme.sh/${MY_DOMAIN}_ecc"
+        ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --log --force
+        if [ $? -ne 0 ]; then
+            log_error "重新申请证书失败"
+            exit 1
+        fi
     fi
 
-    # 执行证书安装，但不立即重载 nginx（避免 nginx 未配置时失败）
+    log_debug "源证书文件存在，开始安装..."
+    # 使用完整的安装命令，包含自动重载
     ~/.acme.sh/acme.sh --install-cert -d "$MY_DOMAIN" --ecc \
         --key-file       /etc/ssl/private/private.key \
-        --fullchain-file /etc/ssl/private/fullchain.cer
+        --fullchain-file /etc/ssl/private/fullchain.cer \
+        --reloadcmd      "sudo systemctl force-reload nginx"
 
     INSTALL_STATUS=$?
+    log_debug "证书安装命令退出状态码: $INSTALL_STATUS"
+    
     if [ $INSTALL_STATUS -ne 0 ]; then
         log_error "执行 --install-cert 时出错，状态码: $INSTALL_STATUS"
-        log_info "显示最后 10 行 acme.sh 日志："
-        tail -n 10 /root/.acme.sh/acme.sh.log 2>/dev/null || echo "无法读取 acme.sh 日志文件"
-        log_info "检查证书源文件："
-        ls -la "/root/.acme.sh/${MY_DOMAIN}_ecc/" 2>/dev/null || echo "证书目录不存在"
-        exit 1
+        log_info "尝试删除证书目录并重新申请..."
+        rm -rf "/root/.acme.sh/${MY_DOMAIN}_ecc"
+        
+        # 重新申请证书
+        ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$MY_DOMAIN" --log --force
+        if [ $? -eq 0 ]; then
+            log_info "证书重新申请成功，再次尝试安装..."
+            ~/.acme.sh/acme.sh --install-cert -d "$MY_DOMAIN" --ecc \
+                --key-file       /etc/ssl/private/private.key \
+                --fullchain-file /etc/ssl/private/fullchain.cer \
+                --reloadcmd      "sudo systemctl force-reload nginx"
+            
+            if [ $? -ne 0 ]; then
+                log_error "重新安装证书仍然失败"
+                log_info "显示最后 10 行 acme.sh 日志："
+                tail -n 10 /root/.acme.sh/acme.sh.log 2>/dev/null || echo "无法读取 acme.sh 日志文件"
+                exit 1
+            fi
+        else
+            log_error "重新申请证书失败"
+            exit 1
+        fi
     fi
 
-    log_success "证书文件安装成功"
+    log_success "证书安装成功"
 
     # 设置正确的权限
     log_info "设置证书文件权限..."
@@ -505,91 +581,152 @@ configure_xray() {
     # 创建配置目录
     mkdir -p /usr/local/etc/xray
     
-    # 生成 Xray 配置文件 (参考 jollyroger.top 正确配置)
-    cat > /usr/local/etc/xray/config.json << EOF
+    # 生成 Xray 配置文件 (严格按照最终确定的正确逻辑)
+    log_info "生成 Xray 配置文件..."
+    log_debug "UUID: $UUID"
+    log_debug "MY_DOMAIN: $MY_DOMAIN"
+    log_debug "PRIVATE_KEY: ${PRIVATE_KEY:0:10}..."
+    log_debug "SHORT_ID: $SHORT_ID"
+    
+    # 验证关键变量是否都已设置
+    if [[ -z "$UUID" || -z "$MY_DOMAIN" || -z "$PRIVATE_KEY" || -z "$SHORT_ID" ]]; then
+        log_error "关键变量未设置！"
+        log_error "UUID: ${UUID:-未设置}"
+        log_error "MY_DOMAIN: ${MY_DOMAIN:-未设置}"
+        log_error "PRIVATE_KEY: ${PRIVATE_KEY:+已设置}"
+        log_error "SHORT_ID: ${SHORT_ID:-未设置}"
+        exit 1
+    fi
+    
+    # 使用临时文件生成配置，避免 heredoc 可能的问题
+    TEMP_CONFIG="/tmp/xray_config_$$.json"
+    
+cat > "$TEMP_CONFIG" << EOF
 {
-    "log": {
-        "loglevel": "warning"
-    },
-    "routing": {
-        "domainStrategy": "IPIfNonMatch",
-        "rules": [
-            {
-                "type": "field",
-                "port": "443",
-                "network": "udp",
-                "outboundTag": "block"
-            },
-            {
-                "type": "field",
-                "ip": [
-                    "geoip:cn",
-                    "geoip:private"
-                ],
-                "outboundTag": "block"
-            }
+  "log": {
+    "loglevel": "warning"
+  },
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "port": "443",
+        "network": "udp",
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "ip": [
+          "geoip:cn",
+          "geoip:private"
+        ],
+        "outboundTag": "block"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "$UUID",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "127.0.0.1:8003",
+          "xver": 1,
+          "serverNames": [
+            "$MY_DOMAIN"
+          ],
+          "privateKey": "$PRIVATE_KEY",
+          "shortIds": [
+            "$SHORT_ID"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
         ]
-    },
-    "inbounds": [
-        {
-            "listen": "0.0.0.0",
-            "port": 443,
-            "protocol": "vless",
-            "settings": {
-                "clients": [
-                    {
-                        "id": "$UUID",
-                        "flow": "xtls-rprx-vision"
-                    }
-                ],
-                "decryption": "none"
-            },
-            "streamSettings": {
-                "network": "tcp",
-                "security": "reality",
-                "realitySettings": {
-                    "show": false,
-                    "dest": "8003",
-                    "xver": 1,
-                    "serverNames": [
-                        "$MY_DOMAIN"
-                    ],
-                    "privateKey": "$PRIVATE_KEY",
-                    "shortIds": [
-                        "$SHORT_ID"
-                    ]
-                }
-            },
-            "sniffing": {
-                "enabled": true,
-                "destOverride": [
-                    "http",
-                    "tls",
-                    "quic"
-                ]
-            }
-        }
-    ],
-    "outbounds": [
-        {
-            "protocol": "freedom",
-            "tag": "direct"
-        },
-        {
-            "protocol": "blackhole",
-            "tag": "block"
-        }
-    ],
-    "policy": {
-        "levels": {
-            "0": {
-                "handshake": 2,
-                "connIdle": 120
-            }
-        }
+      }
     }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "tag": "block"
+    }
+  ],
+  "policy": {
+    "levels": {
+      "0": {
+        "handshake": 2,
+        "connIdle": 120
+      }
+    }
+  }
 }
 EOF
+    
+    # 验证临时配置文件是否生成成功
+    if [[ ! -f "$TEMP_CONFIG" ]]; then
+        log_error "临时配置文件生成失败"
+        exit 1
+    fi
+    
+    # 验证 JSON 格式
+    if command -v jq &> /dev/null; then
+        if ! jq empty "$TEMP_CONFIG" 2>/dev/null; then
+            log_error "生成的配置文件 JSON 格式错误！"
+            log_info "临时配置文件内容："
+            cat "$TEMP_CONFIG"
+            rm -f "$TEMP_CONFIG"
+            exit 1
+        fi
+    fi
+    
+    # 检查关键变量是否正确替换
+    if grep -q '\$UUID\|\$MY_DOMAIN\|\$PRIVATE_KEY\|\$SHORT_ID' "$TEMP_CONFIG"; then
+        log_error "配置文件中存在未替换的变量"
+        log_info "请检查以下变量是否正确设置："
+        log_info "UUID: $UUID"
+        log_info "MY_DOMAIN: $MY_DOMAIN"
+        log_info "PRIVATE_KEY: ${PRIVATE_KEY:0:10}..."
+        log_info "SHORT_ID: $SHORT_ID"
+        log_info "临时配置文件内容："
+        cat "$TEMP_CONFIG"
+        rm -f "$TEMP_CONFIG"
+        exit 1
+    fi
+    
+    # 移动到最终位置
+    mv "$TEMP_CONFIG" /usr/local/etc/xray/config.json
+    
+    # 验证最终配置文件
+    if [[ ! -f "/usr/local/etc/xray/config.json" ]]; then
+        log_error "配置文件移动失败"
+        exit 1
+    fi
+    
+    log_success "Xray 配置文件生成成功"
     
     # 设置权限
     chmod 644 /usr/local/etc/xray/config.json
@@ -749,10 +886,95 @@ start_services() {
 
     # 测试 Xray 配置
     log_info "测试 Xray 配置文件语法..."
-    if ! /usr/local/bin/xray test -config /usr/local/etc/xray/config.json; then
-        log_error "Xray 配置测试失败！"
-        log_error "请检查 Xray 配置文件语法错误"
+    log_debug "检查 Xray 配置文件是否存在: /usr/local/etc/xray/config.json"
+    
+    if [[ ! -f "/usr/local/etc/xray/config.json" ]]; then
+        log_error "Xray 配置文件不存在: /usr/local/etc/xray/config.json"
+        exit 1
+    fi
+    
+    log_debug "显示生成的配置文件内容（前50行）："
+    head -50 /usr/local/etc/xray/config.json
+    echo ""
+    
+    log_debug "验证 JSON 格式..."
+    if command -v jq &> /dev/null; then
+        if ! jq empty /usr/local/etc/xray/config.json 2>/dev/null; then
+            log_error "Xray 配置文件 JSON 格式错误！"
+            log_info "使用 jq 验证 JSON 格式："
+            jq empty /usr/local/etc/xray/config.json || true
+            log_info "配置文件位置: /usr/local/etc/xray/config.json"
+            exit 1
+        else
+            log_success "✓ JSON 格式验证通过"
+        fi
+    else
+        log_warn "jq 工具未安装，跳过 JSON 格式验证"
+    fi
+    
+    log_debug "检查 Xray 二进制文件..."
+    if [[ ! -f "/usr/local/bin/xray" ]]; then
+        log_error "Xray 二进制文件不存在: /usr/local/bin/xray"
+        exit 1
+    fi
+    
+    log_debug "Xray 版本信息："
+    /usr/local/bin/xray version 2>/dev/null || log_warn "无法获取 Xray 版本信息"
+    
+    log_debug "使用 xray test 验证配置..."
+    # 获取详细的错误输出
+    XRAY_TEST_OUTPUT=$(/usr/local/bin/xray test -config /usr/local/etc/xray/config.json 2>&1)
+    XRAY_TEST_STATUS=$?
+    
+    log_debug "Xray 测试输出："
+    echo "$XRAY_TEST_OUTPUT"
+    log_debug "Xray 测试退出状态码: $XRAY_TEST_STATUS"
+    
+    if [ $XRAY_TEST_STATUS -ne 0 ]; then
+        log_error "Xray 配置测试失败！退出状态码: $XRAY_TEST_STATUS"
+        log_error "详细错误信息："
+        echo "$XRAY_TEST_OUTPUT"
         log_info "配置文件位置: /usr/local/etc/xray/config.json"
+        log_info "尝试使用简化的配置进行测试..."
+        
+        # 生成一个最小的测试配置
+        cat > /tmp/xray_test.json << 'EOF'
+{
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 1080,
+      "protocol": "socks"
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom"
+    }
+  ]
+}
+EOF
+        
+        log_info "测试最小配置..."
+        if /usr/local/bin/xray test -config /tmp/xray_test.json; then
+            log_info "最小配置测试通过，问题可能在我们的配置中"
+            log_info "检查变量替换情况..."
+            
+            # 检查是否有未替换的变量
+            if grep -n '\$[A-Z_]*' /usr/local/etc/xray/config.json; then
+                log_error "发现未替换的变量！"
+            fi
+            
+            # 检查关键字段
+            log_info "检查关键配置字段..."
+            grep -n "\"id\":" /usr/local/etc/xray/config.json || log_warn "未找到 UUID 配置"
+            grep -n "\"privateKey\":" /usr/local/etc/xray/config.json || log_warn "未找到 privateKey 配置"
+            grep -n "\"serverNames\":" /usr/local/etc/xray/config.json || log_warn "未找到 serverNames 配置"
+        else
+            log_error "连最小配置都失败，Xray 安装可能有问题"
+        fi
+        
+        rm -f /tmp/xray_test.json
         exit 1
     fi
     log_success "✓ Xray 配置文件语法正确"
@@ -1626,109 +1848,6 @@ uninstall_service() {
 }
 
 # ========================================
-# 功能7: 修改SSH端口
-# ========================================
-
-change_ssh_port() {
-    clear
-    echo -e "${CYAN}=== 修改 SSH 端口 ===${NC}"
-    echo ""
-    
-    # 显示当前 SSH 配置
-    echo -e "${BLUE}当前 SSH 配置:${NC}"
-    echo "端口: $(sudo sshd -T | grep -i "Port" | cut -d' ' -f2)"
-    echo "Root登录: $(sudo sshd -T | grep -i "PermitRootLogin" | cut -d' ' -f2)"
-    echo "密码认证: $(sudo sshd -T | grep -i "PasswordAuthentication" | cut -d' ' -f2)"
-    echo ""
-    
-    # 获取新端口
-    while true; do
-        read -p "请输入新的 SSH 端口 (1024-65535): " new_port
-        if [[ "$new_port" =~ ^[0-9]+$ ]] && [ "$new_port" -ge 1024 ] && [ "$new_port" -le 65535 ]; then
-            break
-        else
-            log_error "端口无效，请输入 1024-65535 之间的数字"
-        fi
-    done
-    
-    echo ""
-    log_warn "修改 SSH 端口可能导致连接中断！"
-    read -p "确认修改 SSH 端口到 $new_port ? (y/N): " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        log_info "操作已取消"
-        read -p "按回车键返回主菜单..."
-        return 0
-    fi
-    
-    log_info "修改 SSH 端口到 $new_port ..."
-    
-    # 备份 SSH 配置
-    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
-    
-    # 修改 SSH 配置
-    sed -i "s/^#*Port .*/Port $new_port/" /etc/ssh/sshd_config
-    
-    # 确保配置中有 Port 行
-    if ! grep -q "^Port $new_port" /etc/ssh/sshd_config; then
-        echo "Port $new_port" >> /etc/ssh/sshd_config
-    fi
-    
-    # 测试 SSH 配置
-    if ! sshd -t; then
-        log_error "SSH 配置测试失败，恢复备份"
-        cp /etc/ssh/sshd_config.backup /etc/ssh/sshd_config
-        read -p "按回车键返回主菜单..."
-        return 1
-    fi
-    
-    # 更新防火墙规则
-    log_info "更新防火墙规则..."
-    if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-        # 获取当前 SSH 端口
-        if load_config; then
-            local old_port="$SSH_PORT"
-        else
-            old_port="22"
-        fi
-        
-        # 添加新端口
-        ufw allow "$new_port/tcp"
-        
-        # 询问是否删除旧端口
-        if [[ "$old_port" != "$new_port" ]]; then
-            read -p "是否从防火墙中删除旧的 SSH 端口 $old_port ? (y/N): " remove_old
-            if [[ "$remove_old" =~ ^[Yy]$ ]]; then
-                ufw delete allow "$old_port/tcp"
-            fi
-        fi
-    fi
-    
-    # 更新 fail2ban 配置 (如果存在)
-    if [[ -f "/etc/fail2ban/jail.local" ]]; then
-        log_info "更新 Fail2ban 配置..."
-        sed -i "s/port = .*/port = $new_port/" /etc/fail2ban/jail.local
-        systemctl restart fail2ban 2>/dev/null || true
-    fi
-    
-    # 更新配置文件
-    if load_config; then
-        SSH_PORT="$new_port"
-        save_config
-    fi
-    
-    # 重启 SSH 服务
-    log_info "重启 SSH 服务..."
-    systemctl restart ssh
-    check_result "SSH 服务重启"
-    
-    log_success "SSH 端口已成功修改为: $new_port"
-    log_warn "请使用新端口重新连接: ssh -p $new_port user@server"
-    log_info "旧的连接会话在断开后无法重连"
-    
-    read -p "按回车键返回主菜单..."
-}
-
-# ========================================
 # 主程序逻辑
 # ========================================
 
@@ -1739,7 +1858,7 @@ main() {
     
     while true; do
         show_main_menu
-        read -p "请输入选项 [1-8]: " choice
+        read -p "请输入选项 [1-7]: " choice
         
         case $choice in
             1) first_install ;;
@@ -1748,13 +1867,12 @@ main() {
             4) check_service_status ;;
             5) show_client_info ;;
             6) uninstall_service ;;
-            7) change_ssh_port ;;
-            8) 
+            7) 
                 log_info "感谢使用 VLESS Reality 服务管理面板！"
                 exit 0
                 ;;
             *)
-                log_error "无效选择，请输入 1-8"
+                log_error "无效选择，请输入 1-7"
                 sleep 2
                 ;;
         esac
